@@ -1,0 +1,58 @@
+{
+  "name": "opencode-meowstudio",
+  "version": "1.0.0",
+  "description": "An Electron desktop client for OpenCode with project, MCP, LSP and plugin management",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RoslynMeow/opencodemeowstudio.git"
+  },
+  "author": "OpenCode MeowStudio contributors",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "build": "npm run typecheck && electron-vite build",
+    "package": "npm run build && electron-builder --config electron-builder.yml",
+    "package:win": "npm run build && electron-builder --win --config electron-builder.yml",
+    "package:win:installer": "npm run build && electron-builder --win nsis --config electron-builder.yml",
+    "package:win:portable": "npm run build && electron-builder --win portable --config electron-builder.yml",
+    "package:mac": "npm run build && electron-builder --mac --config electron-builder.yml",
+    "package:linux": "npm run build && electron-builder --linux --config electron-builder.yml"
+  },
+  "dependencies": {
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@opencode-ai/sdk": "1.19.3",
+    "@uiw/react-codemirror": "^4.25.12",
+    "electron-updater": "^6.6.2",
+    "fflate": "^0.8.2",
+    "jsonc-parser": "3.3.1",
+    "tar": "7.5.22"
+  },
+  "devDependencies": {
+    "@swc/core": "1.16.18",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "clsx": "2.1.1",
+    "electron": "44.9.2",
+    "electron-builder": "26.15.3",
+    "electron-vite": "6.0.0",
+    "lucide-react": "1.60.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.4",
+    "zustand": "5.0.15"
+  }
+}
