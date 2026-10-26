@@ -36,7 +36,7 @@ OpenCode runtime and model providers are configured inside the app. Git is optio
 
 ## Branching
 
-- `main` is the release branch. Changes should reach it only through a Pull Request from `dev`, using **Squash and merge**.
+- `main` is the release branch. Changes should reach it only through a Pull Request from `dev`, using **Create a merge commit**.
 - `dev` is the integration branch for day-to-day feature and fix commits.
 - Direct pushes to `main` are discouraged; enable GitHub branch protection and require the CI status check.
 

@@ -36,7 +36,7 @@ OpenCode 运行时和模型 Provider 在应用内配置。Git 是可选的，但
 
 ## 分支流程
 
-- `main` 是发布分支，只通过来自 `dev` 的 Pull Request 更新，并使用 **Squash and merge**。
+- `main` 是发布分支，只通过来自 `dev` 的 Pull Request 更新，并使用 **Create a merge commit**。
 - `dev` 是日常功能与修复的集成分支。
 - 不建议直接 push `main`；请在 GitHub 开启分支保护并强制 CI 通过。
 
