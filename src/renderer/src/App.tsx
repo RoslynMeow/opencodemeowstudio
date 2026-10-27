@@ -13,6 +13,7 @@ import { SessionsView } from "./views/SessionsView"
 import { isModuleEnabled, viewModule } from "./lib/modules"
 import { SettingsView } from "./views/SettingsView"
 import { Spinner, StatusDot } from "./components/ui"
+import { LoadingBar } from "./components/LoadingBar"
 import { resolveLocale, setLocale } from "./i18n"
 import { useT } from "./i18n/useT"
 
@@ -36,6 +37,10 @@ function BootScreen() {
   const ready = useStudio((store) => store.ready)
   const state = useStudio((store) => store.state)
   const { t } = useT()
+  const percent =
+    state?.runtime.received && state.runtime.total
+      ? Math.min(100, Math.round((state.runtime.received / state.runtime.total) * 100))
+      : undefined
   return (
     <div className="flex h-screen flex-col items-center justify-center bg-canvas">
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent text-[20px] font-black text-accent-contrast">
@@ -55,6 +60,13 @@ function BootScreen() {
           <>
             <StatusDot tone="warn" /> {t("sidebar.backendStarting")}
           </>
+        )}
+      </div>
+      <div className="mt-4 h-1 w-48 overflow-hidden rounded-full bg-line-soft">
+        {percent !== undefined ? (
+          <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${percent}%` }} />
+        ) : (
+          <div className="loading-bar-indeterminate h-full w-1/3 rounded-full bg-accent" />
         )}
       </div>
     </div>
@@ -95,11 +107,14 @@ export default function App() {
   const resolvedView = requestedModule && !isModuleEnabled(state.settings.enabledModules, requestedModule) ? "chat" : view
   const View = VIEWS[resolvedView]
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-canvas text-ink">
-      <Sidebar />
-      <main className="app-surface relative min-w-0 flex-1 overflow-hidden">{View()}</main>
-      <PermissionDialog />
-      <Toasts />
-    </div>
+    <>
+      <LoadingBar />
+      <div className="flex h-screen w-screen overflow-hidden bg-canvas text-ink">
+        <Sidebar />
+        <main className="app-surface relative min-w-0 flex-1 overflow-hidden">{View()}</main>
+        <PermissionDialog />
+        <Toasts />
+      </div>
+    </>
   )
 }

@@ -47,6 +47,7 @@ interface StudioStore {
   state: AppState | null
   view: ViewName
   sessions: Session[]
+  loadingSessions: boolean
   activeSessionId: string | null
   sessionStatuses: Record<string, SessionStatus>
   sessionErrors: Record<string, string>
@@ -158,6 +159,7 @@ export const useStudio = create<StudioStore>()((set, get) => ({
   state: null,
   view: "chat",
   sessions: [],
+  loadingSessions: false,
   activeSessionId: null,
   sessionStatuses: {},
   sessionErrors: {},
@@ -444,6 +446,7 @@ export const useStudio = create<StudioStore>()((set, get) => ({
     if (projectChanged) {
       set({
         sessions: [],
+        loadingSessions: Boolean(next.activeProjectId && next.backend.state === "running"),
         activeSessionId: null,
         sessionStatuses: {},
         sessionErrors: {},
@@ -482,55 +485,63 @@ export const useStudio = create<StudioStore>()((set, get) => ({
   refreshAll: async () => {
     const state = get().state
     if (!state?.activeProject || state.backend.state !== "running") return
-    const [sessions, providers, agents, commands, statuses, worktreeView] = await Promise.allSettled([
-      rpc("session.list"),
-      rpc("provider.catalog"),
-      rpc("provider.agents"),
-      rpc("command.list"),
-      rpc("session.status"),
-      rpc("worktree.list"),
-    ])
-    if (sessions.status === "fulfilled") {
-      const list = sessions.value
-      set({ sessions: list })
-      const rootSessions = list.filter((session) => !session.parentID)
-      const currentId = get().activeSessionId
-      if (!currentId || !list.some((session) => session.id === currentId)) {
-        const rememberedId = localStorage.getItem(sessionStorageKey(state.activeProject.id))
-        const preferred = rootSessions.find((session) => session.id === rememberedId) ?? rootSessions[0]
-        if (preferred) await get().openSession(preferred.id)
-        else set({ activeSessionId: null, messages: [] })
-      }
-    }
-    if (statuses.status === "fulfilled") set({ sessionStatuses: statuses.value })
-    if (worktreeView.status === "fulfilled") {
-      set({
-        worktrees: worktreeView.value.worktrees,
-        merges: worktreeView.value.merges,
-        mainBranch: worktreeView.value.mainBranch ?? null,
-      })
-    }
-    if (providers.status === "fulfilled") {
-      set({ providers: providers.value })
-      if (providers.value.defaultModel) {
-        const projectId = state.activeProject.id
-        if (!get().selectedModels[projectId]) {
-          set((current) => ({
-            selectedModels: { ...current.selectedModels, [projectId]: providers.value.defaultModel as ModelRef },
-          }))
+    if (get().sessions.length === 0) set({ loadingSessions: true })
+    try {
+      const [sessions, providers, agents, commands, statuses, worktreeView] = await Promise.allSettled([
+        rpc("session.list"),
+        rpc("provider.catalog"),
+        rpc("provider.agents"),
+        rpc("command.list"),
+        rpc("session.status"),
+        rpc("worktree.list"),
+      ])
+      if (sessions.status === "fulfilled") {
+        const list = sessions.value
+        set({ sessions: list })
+        const rootSessions = list.filter((session) => !session.parentID)
+        const currentId = get().activeSessionId
+        if (!currentId || !list.some((session) => session.id === currentId)) {
+          const rememberedId = localStorage.getItem(sessionStorageKey(state.activeProject.id))
+          const preferred = rootSessions.find((session) => session.id === rememberedId) ?? rootSessions[0]
+          if (preferred) await get().openSession(preferred.id)
+          else set({ activeSessionId: null, messages: [] })
         }
       }
+      if (statuses.status === "fulfilled") set({ sessionStatuses: statuses.value })
+      if (worktreeView.status === "fulfilled") {
+        set({
+          worktrees: worktreeView.value.worktrees,
+          merges: worktreeView.value.merges,
+          mainBranch: worktreeView.value.mainBranch ?? null,
+        })
+      }
+      if (providers.status === "fulfilled") {
+        set({ providers: providers.value })
+        if (providers.value.defaultModel) {
+          const projectId = state.activeProject.id
+          if (!get().selectedModels[projectId]) {
+            set((current) => ({
+              selectedModels: { ...current.selectedModels, [projectId]: providers.value.defaultModel as ModelRef },
+            }))
+          }
+        }
+      }
+      if (agents.status === "fulfilled") set({ agents: agents.value })
+      if (commands.status === "fulfilled") set({ commands: commands.value })
+    } finally {
+      set({ loadingSessions: false })
     }
-    if (agents.status === "fulfilled") set({ agents: agents.value })
-    if (commands.status === "fulfilled") set({ commands: commands.value })
   },
 
   refreshSessions: async () => {
+    if (get().sessions.length === 0) set({ loadingSessions: true })
     try {
       const [sessions, statuses] = await Promise.all([rpc("session.list"), rpc("session.status").catch(() => ({}))])
       set({ sessions, sessionStatuses: statuses })
     } catch (error) {
       get().addToast("error", formatError(error))
+    } finally {
+      set({ loadingSessions: false })
     }
   },
 

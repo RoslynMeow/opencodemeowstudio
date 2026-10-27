@@ -414,8 +414,28 @@ export function ChatView() {
               </div>
             </div>
           ) : loadingMessages ? (
-            <div className="flex h-full items-center justify-center text-muted">
-              <Spinner />
+            <div className="mx-auto max-w-[1000px] px-4 py-6" aria-busy="true">
+              <div className="mb-4 flex items-center gap-2 text-[11px] text-faint">
+                <Spinner size={11} /> {t("chat.loadingMessages")}
+              </div>
+              <div className="space-y-5">
+                {[0, 1, 2].map((index) => (
+                  <div
+                    key={index}
+                    className={clsx(
+                      "rounded-xl border border-line/60 bg-surface/40 p-4",
+                      index % 2 === 1 && "ml-auto w-2/3",
+                    )}
+                  >
+                    <div className="loading-skeleton h-2.5 w-24 rounded bg-line-soft" />
+                    <div className="loading-skeleton mt-3 h-2.5 w-full rounded bg-line-soft/80" />
+                    <div className="loading-skeleton mt-2 h-2.5 w-4/5 rounded bg-line-soft/70" />
+                    {index % 2 === 0 && (
+                      <div className="loading-skeleton mt-2 h-2.5 w-3/5 rounded bg-line-soft/60" />
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="mx-auto max-w-[1000px] py-4">

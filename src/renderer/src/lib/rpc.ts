@@ -1,4 +1,5 @@
 import type { RpcArgs, RpcName, RpcResult, StudioApi } from "@shared/types"
+import { useLoading } from "../store/useLoading"
 
 declare global {
   interface Window {
@@ -8,8 +9,16 @@ declare global {
 
 export const api = window.studio
 
+const SILENT_RPC = new Set<string>(["app.state", "app.logs", "app.updateStatus", "session.focus", "session.status"])
+
 export async function rpc<K extends RpcName>(method: K, ...args: RpcArgs<K>): Promise<RpcResult<K>> {
-  return api.rpc(method, ...args)
+  const tracked = !SILENT_RPC.has(method)
+  if (tracked) useLoading.getState().start(method)
+  try {
+    return await api.rpc(method, ...args)
+  } finally {
+    if (tracked) useLoading.getState().end()
+  }
 }
 
 export function formatError(error: unknown): string {

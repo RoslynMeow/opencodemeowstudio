@@ -18,10 +18,12 @@ import type {
   GitInfo,
   LspConfig,
   LspEntry,
+  LspRegistryMarket,
   LspViewData,
   McpAuthStart,
   McpConfig,
   McpEntry,
+  McpRegistryMarket,
   McpStatus,
   McpViewData,
   Message,
@@ -1255,9 +1257,21 @@ export const handlers: Record<RpcName, Handler> = {
 
   "config.paths": () => configPaths(getActiveProject(), getSettings().profile),
 
-  "market.mcp": (force?: boolean) => fetchMcpRegistry(force),
+  "market.mcp": async (force?: boolean): Promise<McpRegistryMarket> => {
+    try {
+      return await fetchMcpRegistry(force)
+    } catch (error) {
+      return { entries: [], fetchedAt: Date.now(), source: "", errors: [(error as Error).message] }
+    }
+  },
 
-  "market.lsp": (force?: boolean) => fetchLspRegistry(force),
+  "market.lsp": async (force?: boolean): Promise<LspRegistryMarket> => {
+    try {
+      return await fetchLspRegistry(force)
+    } catch (error) {
+      return { entries: [], fetchedAt: Date.now(), source: "", errors: [(error as Error).message] }
+    }
+  },
 
   "mcp.view": () => mcpView(),
 

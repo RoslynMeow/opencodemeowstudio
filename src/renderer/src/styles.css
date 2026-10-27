@@ -273,6 +273,37 @@ button {
   }
 }
 
+@keyframes loading-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(160%);
+  }
+  100% {
+    transform: translateX(420%);
+  }
+}
+
+.loading-bar-indeterminate {
+  animation: loading-bar 1.15s ease-in-out infinite;
+}
+
+@keyframes loading-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.loading-skeleton {
+  animation: loading-pulse 1.4s ease-in-out infinite;
+}
+
+
 .animate-fade-up {
   animation: fade-up 0.16s ease-out both;
 }

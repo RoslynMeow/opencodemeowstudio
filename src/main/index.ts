@@ -208,7 +208,7 @@ function registerIpc(): void {
       return await dispatch(method, args)
     } catch (error) {
       log("rpc", `${method} failed: ${(error as Error).stack ?? (error as Error).message}`)
-      throw new Error((error as Error).message)
+      return { __meowstudioRpcError: (error as Error).message }
     }
   })
 }
@@ -220,6 +220,7 @@ interface UiSmokeRenderer {
   documentTitle?: string
   readyState?: string
   bodyText?: string
+  loadingBar?: boolean
   state?: { appVersion?: string; platform?: string; userDataDir?: string }
   update?: { phase?: string; currentVersion?: string; portable?: boolean }
 }
@@ -270,6 +271,7 @@ async function runUiSmoke(): Promise<void> {
         documentTitle: document.title,
         readyState: document.readyState,
         bodyText: document.body.innerText.slice(0, 200),
+        loadingBar: Boolean(document.querySelector("[data-loading-bar]")),
         state,
         update,
       }
