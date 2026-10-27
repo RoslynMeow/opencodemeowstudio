@@ -36,7 +36,7 @@ OpenCode runtime and model providers are configured inside the app. Git is optio
 
 ## Branching
 
-- `main` is the release branch. Changes should reach it only through a Pull Request from `dev`, using **Squash and merge**.
+- `main` is the release branch. Changes should reach it only through a Pull Request from `dev`, using **Create a merge commit**.
 - `dev` is the integration branch for day-to-day feature and fix commits.
 - Direct pushes to `main` are discouraged; enable GitHub branch protection and require the CI status check.
 
@@ -48,16 +48,19 @@ Requirements: Node.js 24+ and npm. Packaging is currently supported on Windows x
 npm install
 npm run dev          # development
 npm run typecheck    # typecheck main, preload and renderer
+npm test             # unit, worktree integration and packaged smoke tests
 npm run build        # production build
 npm start            # preview the production build
 npm run package:win  # portable + installer
 ```
 
-Useful packaging commands:
+Useful packaging and test commands:
 
 ```bash
 npm run package:win:portable
 npm run package:win:installer
+npm run package:win:dir   # unpacked build for the Electron smoke test
+npm run test:smoke        # smoke test an existing win-unpacked build
 ```
 
 ## Project layout

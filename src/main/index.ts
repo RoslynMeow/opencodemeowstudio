@@ -213,6 +213,122 @@ function registerIpc(): void {
   })
 }
 
+interface UiSmokeRenderer {
+  hasStudio: boolean
+  platform?: string
+  versions?: { electron?: string; chrome?: string; node?: string }
+  documentTitle?: string
+  readyState?: string
+  bodyText?: string
+  state?: { appVersion?: string; platform?: string; userDataDir?: string }
+  update?: { phase?: string; currentVersion?: string; portable?: boolean }
+}
+
+function waitForWindowReady(window: BrowserWindow): Promise<void> {
+  return new Promise((resolve) => {
+    if (!window.webContents.isLoading()) {
+      resolve()
+      return
+    }
+    const timer = setTimeout(resolve, 15_000)
+    window.webContents.once("did-finish-load", () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
+function waitForWindowVisible(window: BrowserWindow): Promise<boolean> {
+  if (window.isVisible()) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(window.isVisible()), 15_000)
+    window.once("show", () => {
+      clearTimeout(timer)
+      resolve(true)
+    })
+  })
+}
+
+async function runUiSmoke(): Promise<void> {
+  const started = Date.now()
+  let exitCode = 0
+  const results: Record<string, unknown> = {}
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) throw new Error("main window was not created")
+    const window = mainWindow
+    await waitForWindowReady(window)
+    const visible = await waitForWindowVisible(window)
+    const renderer = (await window.webContents.executeJavaScript(`(async () => {
+      const api = window.studio
+      if (!api) return { hasStudio: false }
+      const state = await api.rpc("app.state")
+      const update = await api.rpc("app.updateStatus")
+      return {
+        hasStudio: true,
+        platform: api.platform,
+        versions: api.versions,
+        documentTitle: document.title,
+        readyState: document.readyState,
+        bodyText: document.body.innerText.slice(0, 200),
+        state,
+        update,
+      }
+    })()`)) as UiSmokeRenderer
+
+    results.window = {
+      title: window.getTitle(),
+      visible,
+      destroyed: window.isDestroyed(),
+      url: window.webContents.getURL(),
+    }
+    results.renderer = renderer
+
+    if (!renderer.hasStudio) throw new Error("preload API window.studio is missing")
+    if (renderer.platform !== process.platform) {
+      throw new Error(`preload platform mismatch: ${renderer.platform} != ${process.platform}`)
+    }
+    if (renderer.state?.appVersion !== app.getVersion()) {
+      throw new Error(`app.state version mismatch: ${renderer.state?.appVersion} != ${app.getVersion()}`)
+    }
+    if (renderer.state?.platform !== process.platform) {
+      throw new Error(`app.state platform mismatch: ${renderer.state?.platform} != ${process.platform}`)
+    }
+    if (renderer.state?.userDataDir?.toLowerCase() !== app.getPath("userData").toLowerCase()) {
+      throw new Error("app.state userDataDir does not match the isolated smoke directory")
+    }
+    if (typeof renderer.update?.phase !== "string" || !renderer.update.phase) {
+      throw new Error("app.updateStatus did not return a phase")
+    }
+    if (renderer.update.currentVersion !== app.getVersion()) {
+      throw new Error(
+        `update currentVersion mismatch: ${renderer.update.currentVersion} != ${app.getVersion()}`,
+      )
+    }
+    if (renderer.update.portable !== false) {
+      throw new Error("win-unpacked smoke expected portable=false")
+    }
+    if (window.getTitle() !== "OpenCode MeowStudio") {
+      throw new Error(`unexpected window title: ${window.getTitle()}`)
+    }
+    if (!visible) throw new Error("main window never became visible")
+
+    results.elapsedMs = Date.now() - started
+  } catch (error) {
+    exitCode = 1
+    results.error = (error as Error).stack ?? (error as Error).message
+  }
+  const output = JSON.stringify(results, null, 2)
+  try {
+    const { writeFileSync } = await import("node:fs")
+    writeFileSync(join(app.getPath("userData"), "ui-smoke-result.json"), output, "utf8")
+  } catch {
+    // ignore
+  }
+  process.stdout.write(`UI_SMOKE_RESULT ${output}\n`)
+  stopBackendImmediate()
+  app.exit(exitCode)
+}
+
 async function runSmoke(): Promise<void> {
   const smokeProject = process.env.STUDIO_SMOKE_PROJECT
   if (smokeProject) {
@@ -814,6 +930,10 @@ async function boot(): Promise<void> {
   initUpdater((status) => send({ type: "update", status }))
   const project = getActiveProject()
   setActiveDirectory(project?.path ?? null)
+  if (process.env.STUDIO_SMOKE_UI === "1") {
+    void runUiSmoke()
+    return
+  }
   void captureScreenshot()
   void ensureBackend(false)
     .then(() => log("app", "backend ready"))
