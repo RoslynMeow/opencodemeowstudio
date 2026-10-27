@@ -1,7 +1,9 @@
 import { app } from "electron"
-import { autoUpdater, type UpdateInfo } from "electron-updater"
+import electronUpdater, { type UpdateInfo } from "electron-updater"
 import type { UpdateStatus } from "@shared/types"
 import { log } from "./logger"
+
+const { autoUpdater } = electronUpdater
 
 let status: UpdateStatus = {
   phase: "idle",
