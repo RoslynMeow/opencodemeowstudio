@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import type { MergeInfo, Project, WorktreeInfo, WorktreeMergeResult, WorktreeView } from "@shared/types"
-import { gitFailure, gitOperation, runGitAsync, runGitSync } from "./git-service"
+import { gitFailure, gitOperation, gitOperationAsync, runGitAsync, runGitSync } from "./git-service"
 import { log } from "./logger"
 import { getMerges, getWorktree, getWorktrees, removeWorktreeRecord, upsertMerge, upsertWorktree } from "./store"
 
@@ -130,37 +130,57 @@ export function recordCreatedWorktree(project: Project, sessionId: string, creat
   return info
 }
 
-function isAncestor(projectPath: string, branch: string, target: string): boolean {
+async function isGitRepoAsync(projectPath: string): Promise<boolean> {
   try {
-    runGitSync(projectPath, ["merge-base", "--is-ancestor", branch, target])
+    return (await runGitAsync(projectPath, ["rev-parse", "--is-inside-work-tree"], 15_000)).trim() === "true"
+  } catch {
+    return false
+  }
+}
+
+async function currentBranchAsync(projectPath: string): Promise<string | null> {
+  try {
+    const branch = (await runGitAsync(projectPath, ["rev-parse", "--abbrev-ref", "HEAD"], 15_000)).trim()
+    return branch && branch !== "HEAD" ? branch : null
+  } catch {
+    return null
+  }
+}
+
+async function isAncestorAsync(projectPath: string, branch: string, target: string): Promise<boolean> {
+  try {
+    await runGitAsync(projectPath, ["merge-base", "--is-ancestor", branch, target], 30_000)
     return true
   } catch {
     return false
   }
 }
 
-export function listWorktreeView(project: Project): WorktreeView {
-  const isRepo = isGitRepo(project.path)
-  if (!isRepo) return { isRepo: false, worktrees: [], merges: [] }
-  const mainBranch = currentBranch(project.path) ?? undefined
-  const operation = gitOperation(project.path)
-  const worktrees = getWorktrees(project.id).map((info) => {
+export async function listWorktreeViewAsync(project: Project): Promise<WorktreeView> {
+  if (!(await isGitRepoAsync(project.path))) return { isRepo: false, worktrees: [], merges: [] }
+  const mainBranch = (await currentBranchAsync(project.path)) ?? undefined
+  const operation = await gitOperationAsync(project.path)
+  const worktrees: WorktreeInfo[] = []
+  for (const info of getWorktrees(project.id)) {
     if (!existsSync(info.path)) {
       if (info.status !== "missing") {
         const next = { ...info, status: "missing" as const, updatedAt: Date.now() }
         upsertWorktree(next)
-        return next
+        worktrees.push(next)
+      } else {
+        worktrees.push(info)
       }
-      return info
+      continue
     }
-    if (info.status === "merged" && !isAncestor(project.path, info.branch, info.baseBranch)) {
+    if (info.status === "merged" && !(await isAncestorAsync(project.path, info.branch, info.baseBranch))) {
       const next: WorktreeInfo = { ...info, status: "active", updatedAt: Date.now(), mergedAt: undefined, commit: undefined }
       upsertWorktree(next)
-      return next
+      worktrees.push(next)
+      continue
     }
     if (info.status === "conflict" && !operation) {
-      if (isAncestor(project.path, info.branch, info.baseBranch)) {
-        const commit = runGitSync(project.path, ["rev-parse", "--short", info.baseBranch]).trim()
+      if (await isAncestorAsync(project.path, info.branch, info.baseBranch)) {
+        const commit = (await runGitAsync(project.path, ["rev-parse", "--short", info.baseBranch], 15_000)).trim()
         const next: WorktreeInfo = {
           ...info,
           status: "merged",
@@ -176,14 +196,16 @@ export function listWorktreeView(project: Project): WorktreeView {
         if (latest?.status === "conflict") {
           upsertMerge({ ...latest, status: "merged", commit, message: undefined, updatedAt: Date.now() })
         }
-        return next
+        worktrees.push(next)
+        continue
       }
       const next: WorktreeInfo = { ...info, status: "active", updatedAt: Date.now(), error: undefined }
       upsertWorktree(next)
-      return next
+      worktrees.push(next)
+      continue
     }
-    return info
-  })
+    worktrees.push(info)
+  }
   return { isRepo: true, mainBranch, worktrees, merges: getMerges(project.id) }
 }
 
