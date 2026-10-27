@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, Menu, screen, shell } from "electron"
-import { copyFileSync, cpSync, existsSync, mkdirSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
+import { copyFile, cp, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { BackendStatus, RuntimeStatus, StudioEvent } from "@shared/types"
@@ -35,7 +36,7 @@ if (customUserData) {
 const baseDir = fileURLToPath(new URL(".", import.meta.url))
 let mainWindow: BrowserWindow | null = null
 
-function migrateLegacyUserData(): void {
+async function migrateLegacyUserData(): Promise<void> {
   if (customUserData || portableDir) return
   const current = app.getPath("userData")
   const legacyDirs = [
@@ -44,18 +45,18 @@ function migrateLegacyUserData(): void {
   ]
   for (const legacy of legacyDirs) {
     if (legacy.toLowerCase() === current.toLowerCase() || !existsSync(legacy)) continue
-    mkdirSync(current, { recursive: true })
+    await mkdir(current, { recursive: true })
     for (const name of ["runtime", "profiles", "Local Storage"]) {
       const source = join(legacy, name)
       const target = join(current, name)
       if (existsSync(source) && !existsSync(target)) {
-        cpSync(source, target, { recursive: true })
+        await cp(source, target, { recursive: true })
       }
     }
     const legacyState = join(legacy, "studio-state.json")
     const currentState = join(current, "studio-state.json")
     if (existsSync(legacyState) && !existsSync(currentState)) {
-      copyFileSync(legacyState, currentState)
+      await copyFile(legacyState, currentState)
     }
   }
 }
@@ -901,8 +902,8 @@ async function captureScreenshot(): Promise<void> {
 }
 
 async function boot(): Promise<void> {
-  migrateLegacyUserData()
-  initLogger()
+  await migrateLegacyUserData()
+  await initLogger()
   initStore()
   installCrashHandlers()
   wireEvents()

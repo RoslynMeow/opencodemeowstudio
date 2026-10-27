@@ -1,18 +1,38 @@
 import { app } from "electron"
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
 const MAX_LINES = 800
 const lines: string[] = []
 let logFile: string | null = null
 let hook: ((line: string) => void) | null = null
+let queue: string[] = []
+let flushTimer: NodeJS.Timeout | null = null
+let writeChain: Promise<void> = Promise.resolve()
 
-export function initLogger(): void {
+async function flushQueue(): Promise<void> {
+  if (!logFile || queue.length === 0) return
+  const data = `${queue.splice(0, queue.length).join("\n")}\n`
+  const file = logFile
+  writeChain = writeChain.then(() => appendFile(file, data, "utf8")).catch(() => undefined)
+  await writeChain
+}
+
+function scheduleFlush(): void {
+  if (flushTimer) return
+  flushTimer = setTimeout(() => {
+    flushTimer = null
+    void flushQueue()
+  }, 40)
+}
+
+export async function initLogger(): Promise<void> {
   try {
     logFile = join(app.getPath("userData"), "logs", "studio.log")
-    mkdirSync(dirname(logFile), { recursive: true })
+    await mkdir(dirname(logFile), { recursive: true })
     if (existsSync(logFile)) {
-      const previous = readFileSync(logFile, "utf8").split(/\r?\n/).filter(Boolean)
+      const previous = (await readFile(logFile, "utf8")).split(/\r?\n/).filter(Boolean)
       lines.push(...previous.slice(-Math.floor(MAX_LINES / 2)))
     }
     log("app", `starting ${app.getName()} ${app.getVersion()}`)
@@ -32,11 +52,8 @@ export function log(scope: string, message: string): void {
   lines.push(line)
   if (lines.length > MAX_LINES) lines.splice(0, lines.length - MAX_LINES)
   if (logFile) {
-    try {
-      appendFileSync(logFile, line + "\n", "utf8")
-    } catch {
-      // ignore log write failures
-    }
+    queue.push(line)
+    scheduleFlush()
   }
   hook?.(line)
 }
@@ -47,11 +64,9 @@ export function getLogs(): string[] {
 
 export function clearLogs(): void {
   lines.length = 0
+  queue = []
   if (logFile) {
-    try {
-      writeFileSync(logFile, "", "utf8")
-    } catch {
-      // ignore
-    }
+    const file = logFile
+    writeChain = writeChain.then(() => writeFile(file, "", "utf8")).catch(() => undefined)
   }
 }

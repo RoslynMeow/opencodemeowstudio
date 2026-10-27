@@ -1,6 +1,7 @@
-import { spawnSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
-import { chmodSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { createWriteStream, existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { chmod, mkdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Readable, Transform } from "node:stream"
@@ -45,18 +46,22 @@ function packageForPlatform(): string {
   return `opencode-linux-${arch}${musl ? "-musl" : ""}`
 }
 
-function verifyBinary(binary: string): string {
-  const shell = process.platform === "win32" && /\.(cmd|bat)$/i.test(binary)
-  const result = spawnSync(binary, ["--version"], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 30_000,
-    shell,
+function execFileText(executable: string, args: string[], timeout: number, shell = false): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(executable, args, { encoding: "utf8", windowsHide: true, timeout, shell }, (error, stdout, stderr) => {
+      const output = `${stdout ?? ""}${stderr ?? ""}`.trim()
+      if (error) {
+        reject(new Error(output || error.message))
+        return
+      }
+      resolve(output)
+    })
   })
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim()
-  if (result.status !== 0) {
-    throw new Error(output || `Unable to execute ${binary}`)
-  }
+}
+
+async function verifyBinary(binary: string): Promise<string> {
+  const shell = process.platform === "win32" && /\.(cmd|bat)$/i.test(binary)
+  const output = await execFileText(binary, ["--version"], 30_000, shell)
   const match = output.match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/)
   return match?.[0] ?? output.split(/\s+/).pop() ?? "unknown"
 }
@@ -86,13 +91,16 @@ function markVerified(version: string, binary: string): void {
   }
 }
 
-function findSystemBinary(): string | null {
+async function findSystemBinary(): Promise<string | null> {
   const finder = process.platform === "win32" ? "where.exe" : "which"
-  const result = spawnSync(finder, ["opencode"], { encoding: "utf8", windowsHide: true, timeout: 15_000 })
-  if (result.status !== 0) return null
-  const first = (result.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-  if (!first) return null
-  return existsSync(first) ? first : null
+  try {
+    const output = await execFileText(finder, ["opencode"], 15_000)
+    const first = output.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+    if (!first) return null
+    return existsSync(first) ? first : null
+  } catch {
+    return null
+  }
 }
 
 interface NpmMetadata {
@@ -161,24 +169,24 @@ async function downloadRuntime(version: string): Promise<RuntimeStatus> {
   if (metadata?.dist?.integrity) {
     const actual = `sha512-${hash.digest("base64")}`
     if (actual !== metadata.dist.integrity) {
-      rmSync(temp, { force: true })
+      await rm(temp, { force: true })
       throw new Error("Runtime download integrity check failed")
     }
   }
 
   update({ state: "extracting" })
-  rmSync(root, { recursive: true, force: true })
-  mkdirSync(root, { recursive: true })
+  await rm(root, { recursive: true, force: true })
+  await mkdir(root, { recursive: true })
   await extract({ file: temp, cwd: root, strip: 1 })
-  rmSync(temp, { force: true })
+  await rm(temp, { force: true })
 
   if (!existsSync(binary)) {
     throw new Error("The downloaded archive did not contain the opencode binary")
   }
   if (process.platform !== "win32") {
-    chmodSync(binary, 0o755)
+    await chmod(binary, 0o755)
   }
-  const actualVersion = verifyBinary(binary)
+  const actualVersion = await verifyBinary(binary)
   markVerified(version, binary)
   log("runtime", `runtime ready at ${binary} (${actualVersion})`)
   return update({ state: "ready", version: actualVersion, binaryPath: binary, source: "downloaded", error: undefined })
@@ -190,7 +198,7 @@ async function runEnsure(version: string, autoDownload: boolean, force: boolean)
   const override = process.env.STUDIO_RUNTIME_BIN
   if (override && existsSync(override)) {
     try {
-      const actual = verifyBinary(override)
+      const actual = await verifyBinary(override)
       return update({ state: "ready", version: actual, binaryPath: override, source: "override", error: undefined })
     } catch (error) {
       log("runtime", `override binary invalid: ${(error as Error).message}`)
@@ -204,7 +212,7 @@ async function runEnsure(version: string, autoDownload: boolean, force: boolean)
       return update({ state: "ready", version, binaryPath: target, source: "cache", error: undefined })
     }
     try {
-      const actual = verifyBinary(target)
+      const actual = await verifyBinary(target)
       markVerified(version, target)
       return update({ state: "ready", version: actual, binaryPath: target, source: "cache", error: undefined })
     } catch (error) {
@@ -219,18 +227,18 @@ async function runEnsure(version: string, autoDownload: boolean, force: boolean)
       return await downloadRuntime(version)
     } catch (error) {
       log("runtime", `download failed: ${(error as Error).message}`)
-      const system = findSystemBinary()
+      const system = await findSystemBinary()
       if (system) {
-        const actual = verifyBinary(system)
+        const actual = await verifyBinary(system)
         return update({ state: "ready", version: actual, binaryPath: system, source: "system", error: undefined })
       }
       return update({ state: "error", error: (error as Error).message, version })
     }
   }
 
-  const system = findSystemBinary()
+  const system = await findSystemBinary()
   if (system) {
-    const actual = verifyBinary(system)
+    const actual = await verifyBinary(system)
     return update({ state: "ready", version: actual, binaryPath: system, source: "system", error: undefined })
   }
 

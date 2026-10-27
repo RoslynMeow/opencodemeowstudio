@@ -110,7 +110,6 @@ import {
   gitTag,
   installGit,
   runGitAsync,
-  runGitSync,
 } from "./git-service"
 import { ensureRuntime, listRuntimeVersions } from "./runtime"
 import { fetchLspRegistry, fetchMcpRegistry } from "./market-service"
@@ -841,7 +840,7 @@ export const handlers: Record<RpcName, Handler> = {
   "session.create": async (title?: string) => {
     const project = requireProject()
     const useWorktree = getSettings().sessionWorktrees !== false
-    const created = useWorktree ? createSessionWorktree(project) : null
+    const created = useWorktree ? await createSessionWorktree(project) : null
     const client = created ? getClient(created.path) : clientFor()
     try {
       const session = await call<Session>(client.session.create({ body: { title: title || "New chat" } }))
@@ -851,9 +850,9 @@ export const handlers: Record<RpcName, Handler> = {
     } catch (error) {
       if (created) {
         try {
-          runGitSync(project.path, ["worktree", "remove", "--force", created.path])
-          runGitSync(project.path, ["worktree", "prune"])
-          runGitSync(project.path, ["branch", "-D", created.branch])
+          await runGitAsync(project.path, ["worktree", "remove", "--force", created.path], 60_000)
+          await runGitAsync(project.path, ["worktree", "prune"], 30_000)
+          await runGitAsync(project.path, ["branch", "-D", created.branch], 30_000)
         } catch {
           // ignore cleanup failure
         }
@@ -894,7 +893,7 @@ export const handlers: Record<RpcName, Handler> = {
       await call<boolean>(client.session.delete({ path: { id: sessionId } }))
       sessionDirectories.delete(sessionId)
     }
-    if (getWorktree(id)) removeSessionWorktree(project, id)
+    if (getWorktree(id)) await removeSessionWorktree(project, id)
     return true
   },
 
@@ -1029,7 +1028,7 @@ export const handlers: Record<RpcName, Handler> = {
 
   "worktree.remove": async (sessionId: string) => {
     const project = requireProject()
-    removeSessionWorktree(project, sessionId)
+    await removeSessionWorktree(project, sessionId)
     return listWorktreeViewAsync(project)
   },
 
@@ -1235,7 +1234,7 @@ export const handlers: Record<RpcName, Handler> = {
     await applyConfigChange()
     if (scope === "project") {
       const project = getActiveProject()
-      if (project) syncWorktreeConfigs(project)
+      if (project) await syncWorktreeConfigs(project)
     }
     return result
   },
@@ -1245,7 +1244,7 @@ export const handlers: Record<RpcName, Handler> = {
     await applyConfigChange()
     if (scope === "project") {
       const project = getActiveProject()
-      if (project) syncWorktreeConfigs(project)
+      if (project) await syncWorktreeConfigs(project)
     }
     return result
   },
@@ -1255,7 +1254,7 @@ export const handlers: Record<RpcName, Handler> = {
     await applyConfigChange()
     if (scope === "project") {
       const project = getActiveProject()
-      if (project) syncWorktreeConfigs(project)
+      if (project) await syncWorktreeConfigs(project)
     }
     return result
   },
