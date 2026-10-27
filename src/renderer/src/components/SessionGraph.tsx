@@ -3,47 +3,17 @@ import { ChevronDown, ChevronRight, FolderMinus, GitMerge, Trash2 } from "lucide
 import type { SessionStatus, SessionUsage, WorktreeInfo } from "@shared/types"
 import { useMemo } from "react"
 import type { SessionTreeNode } from "../lib/session-tree"
+import {
+  SESSION_GRAPH_ROW_HEIGHT as ROW_HEIGHT,
+  layoutSessionGraph as layout,
+  sessionEdgePath,
+  sessionNodeX as nodeX,
+  sessionNodeY as nodeY,
+} from "../lib/session-graph-layout"
 import { sessionTitle } from "../lib/session-title"
 import { useT } from "../i18n/useT"
 
-const ROW_HEIGHT = 40
-const LANE_WIDTH = 16
-const PADDING = 10
 const COLORS = ["#f0b35c", "#6aa8ff", "#7dd3a7", "#e879a6", "#b99cff", "#f28f6b", "#7ee0e6", "#d4d45a"]
-
-interface GraphRow {
-  node: SessionTreeNode
-  row: number
-  lane: number
-  parentRow?: number
-  parentLane?: number
-}
-
-function layout(tree: SessionTreeNode | null, collapsed?: Set<string>): { rows: GraphRow[]; lanes: number; width: number; height: number } {
-  if (!tree) return { rows: [], lanes: 1, width: 0, height: 0 }
-  const rows: GraphRow[] = []
-  let nextLane = 1
-  let lanes = 1
-  const visit = (node: SessionTreeNode, lane: number, parent?: GraphRow) => {
-    const row = rows.length
-    const entry: GraphRow = { node, row, lane, parentRow: parent?.row, parentLane: parent?.lane }
-    rows.push(entry)
-    lanes = Math.max(lanes, lane + 1)
-    if (!collapsed?.has(node.session.id)) {
-      node.children.forEach((child, index) => {
-        const childLane = index === 0 ? lane : nextLane++
-        visit(child, childLane, entry)
-      })
-    }
-  }
-  visit(tree, 0)
-  return {
-    rows,
-    lanes,
-    width: PADDING * 2 + lanes * LANE_WIDTH,
-    height: Math.max(rows.length * ROW_HEIGHT, ROW_HEIGHT),
-  }
-}
 
 export function SessionGraph({
   tree,
@@ -85,7 +55,7 @@ export function SessionGraph({
             row.parentRow === undefined ? null : (
               <path
                 key={`edge-${row.node.session.id}`}
-                d={edgePath(row)}
+                d={sessionEdgePath(row)}
                 fill="none"
                 stroke={laneColor(row.lane)}
                 strokeWidth={1.5}
@@ -208,22 +178,4 @@ export function SessionGraph({
 
 function shortBranch(branch: string): string {
   return branch.replace("meow/session-", "")
-}
-
-function nodeX(lane: number): number {
-  return PADDING + lane * LANE_WIDTH
-}
-
-function nodeY(row: number): number {
-  return row * ROW_HEIGHT + ROW_HEIGHT / 2
-}
-
-function edgePath(row: GraphRow): string {
-  const x1 = nodeX(row.parentLane ?? row.lane)
-  const y1 = nodeY(row.parentRow ?? row.row)
-  const x2 = nodeX(row.lane)
-  const y2 = nodeY(row.row)
-  if (Math.abs(x1 - x2) < 0.5) return `M ${x1} ${y1} L ${x2} ${y2}`
-  const bend = Math.min(20, Math.max(6, (y2 - y1) / 3))
-  return `M ${x1} ${y1} C ${x1} ${y1 + bend}, ${x2} ${y2 - bend}, ${x2} ${y2}`
 }

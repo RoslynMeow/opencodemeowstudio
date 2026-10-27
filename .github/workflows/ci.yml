@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   check:
-    name: Typecheck and build
+    name: Typecheck, test and build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +24,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm test
       - run: npm run typecheck
       - run: npm run build
 
@@ -45,6 +46,8 @@ jobs:
       - run: npm run build
       - name: Build portable and installer
         run: npx electron-builder --win --config electron-builder.yml --publish never
+      - name: Smoke test packaged app
+        run: npm run test:smoke
       - uses: actions/upload-artifact@v4
         with:
           name: windows-dev

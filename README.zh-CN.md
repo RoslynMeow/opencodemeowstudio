@@ -48,16 +48,19 @@ OpenCode 运行时和模型 Provider 在应用内配置。Git 是可选的，但
 npm install
 npm run dev          # 开发模式
 npm run typecheck    # 检查 main / preload / renderer
+npm test             # 单元、worktree 集成和打包 smoke 测试
 npm run build        # 生产构建
 npm start            # 预览生产构建
 npm run package:win  # portable + 安装包
 ```
 
-单独打包：
+打包与测试命令：
 
 ```bash
 npm run package:win:portable
 npm run package:win:installer
+npm run package:win:dir   # 未打包目录，用于 Electron smoke 测试
+npm run test:smoke        # 对已有 win-unpacked 构建运行 smoke 测试
 ```
 
 ## 项目结构
