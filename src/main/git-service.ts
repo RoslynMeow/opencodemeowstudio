@@ -716,24 +716,24 @@ export async function gitOperationAsync(projectPath: string): Promise<"merge" | 
   return null
 }
 
-function checkoutBranch(projectPath: string, branch: string): string {
+async function checkoutBranch(projectPath: string, branch: string): Promise<string> {
   if (!branch || branch.startsWith("-")) throw new Error("Invalid branch name")
   try {
-    return runGitSync(projectPath, ["switch", branch])
+    return await runGitAsync(projectPath, ["switch", branch])
   } catch {
-    return runGitSync(projectPath, ["checkout", branch])
+    return await runGitAsync(projectPath, ["checkout", branch])
   }
 }
 
-export function gitCheckout(projectPath: string, branch: string): string {
+export function gitCheckout(projectPath: string, branch: string): Promise<string> {
   return checkoutBranch(projectPath, branch)
 }
 
-export function gitCreateBranch(projectPath: string, name: string): string {
+export async function gitCreateBranch(projectPath: string, name: string): Promise<string> {
   const branch = name.trim()
   if (!branch || branch.startsWith("-")) throw new Error("Invalid branch name")
-  runGitSync(projectPath, ["check-ref-format", "--branch", branch])
-  return runGitSync(projectPath, ["switch", "-c", branch])
+  await runGitAsync(projectPath, ["check-ref-format", "--branch", branch], 15_000)
+  return runGitAsync(projectPath, ["switch", "-c", branch])
 }
 
 function gitPath(projectPath: string, name: string): string {
@@ -765,14 +765,14 @@ export async function gitRebase(projectPath: string, branch: string): Promise<st
 }
 
 export async function gitAbort(projectPath: string): Promise<string> {
-  const operation = gitOperation(projectPath)
+  const operation = await gitOperationAsync(projectPath)
   if (operation === "merge") return runGitAsync(projectPath, ["merge", "--abort"])
   if (operation === "rebase") return runGitAsync(projectPath, ["rebase", "--abort"])
   throw new Error("No merge or rebase is in progress")
 }
 
 export async function gitContinue(projectPath: string): Promise<string> {
-  const operation = gitOperation(projectPath)
+  const operation = await gitOperationAsync(projectPath)
   if (operation === "rebase") return runGitAsync(projectPath, ["rebase", "--continue"])
   if (operation === "merge") return runGitAsync(projectPath, ["commit", "--no-edit"])
   throw new Error("No merge or rebase is in progress")
@@ -789,17 +789,17 @@ export async function gitStashPop(projectPath: string): Promise<string> {
 export async function gitTag(projectPath: string, name: string): Promise<string> {
   const tag = name.trim()
   if (!tag || tag.startsWith("-")) throw new Error("Invalid tag name")
-  return runGitSync(projectPath, ["tag", tag])
+  return runGitAsync(projectPath, ["tag", tag])
 }
 
 export async function gitDeleteBranch(projectPath: string, name: string): Promise<string> {
   const branch = name.trim()
   if (!branch || branch.startsWith("-")) throw new Error("Invalid branch name")
-  return runGitSync(projectPath, ["branch", "-d", branch])
+  return runGitAsync(projectPath, ["branch", "-d", branch])
 }
 
-export function gitInit(projectPath: string): string {
-  return runGitSync(projectPath, ["init"])
+export function gitInit(projectPath: string): Promise<string> {
+  return runGitAsync(projectPath, ["init"])
 }
 
 export function gitFetch(projectPath: string): Promise<string> {
@@ -813,14 +813,16 @@ export function gitPull(projectPath: string): Promise<string> {
 export async function gitPush(projectPath: string): Promise<string> {
   let upstream = ""
   try {
-    upstream = runGitSync(projectPath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim()
+    upstream = (
+      await runGitAsync(projectPath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 15_000)
+    ).trim()
   } catch {
     upstream = ""
   }
   if (upstream) return runGitAsync(projectPath, ["push"])
-  const remote = gitRemotes(projectPath).find((entry) => entry.name === "origin")
+  const remote = (await gitRemotesAsync(projectPath)).find((entry) => entry.name === "origin")
   if (!remote) throw new Error("No git remote is configured. Add a remote before pushing.")
-  const branch = runGitSync(projectPath, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()
+  const branch = (await runGitAsync(projectPath, ["rev-parse", "--abbrev-ref", "HEAD"], 15_000)).trim()
   if (!branch || branch === "HEAD") throw new Error("Cannot push a detached HEAD")
   return runGitAsync(projectPath, ["push", "-u", remote.name, branch])
 }

@@ -1,5 +1,5 @@
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk"
-import { spawn, spawnSync, type ChildProcess } from "node:child_process"
+import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { createServer } from "node:net"
 import { homedir } from "node:os"
@@ -172,6 +172,13 @@ export async function startBackend(options: StartOptions): Promise<BackendStatus
   }
 }
 
+function killProcessTree(pid: number, timeout: number): Promise<void> {
+  if (process.platform !== "win32") return Promise.resolve()
+  return new Promise((resolve) => {
+    execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, timeout }, () => resolve())
+  })
+}
+
 export async function stopBackend(): Promise<void> {
   stopping = true
   subscriptionController?.abort()
@@ -186,7 +193,7 @@ export async function stopBackend(): Promise<void> {
   }
   const pid = proc.pid
   if (pid && process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, timeout: 10_000 })
+    await killProcessTree(pid, 10_000)
   } else {
     proc.kill("SIGTERM")
   }

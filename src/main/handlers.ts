@@ -1,8 +1,8 @@
 import type { OpencodeClient } from "@opencode-ai/sdk"
 import { app, dialog, shell } from "electron"
-import { spawn, spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { readFile } from "node:fs/promises"
+import { execFile, spawn } from "node:child_process"
+import { existsSync, mkdirSync, statSync } from "node:fs"
+import { readFile, writeFile } from "node:fs/promises"
 import { isAbsolute, relative, resolve } from "node:path"
 import type {
   Agent,
@@ -320,10 +320,11 @@ async function clientForSession(id: string): Promise<OpencodeClient> {
   return getClient(await sessionDirectory(id))
 }
 
-function commandOnPath(command: string): boolean {
+function commandOnPath(command: string): Promise<boolean> {
   const finder = process.platform === "win32" ? "where.exe" : "which"
-  const result = spawnSync(finder, [command], { windowsHide: true, encoding: "utf8" })
-  return result.status === 0
+  return new Promise((resolve) => {
+    execFile(finder, [command], { windowsHide: true }, (error) => resolve(!error))
+  })
 }
 
 function launchDetached(command: string, args: string[]): void {
@@ -332,15 +333,19 @@ function launchDetached(command: string, args: string[]): void {
   child.unref()
 }
 
-function openProjectTerminal(directory: string): void {
+async function openProjectTerminal(directory: string): Promise<void> {
   const target = resolve(directory)
   if (!existsSync(target)) throw new Error("Project directory does not exist")
   if (process.platform === "win32") {
-    if (commandOnPath("wt.exe") || commandOnPath("wt")) {
+    if ((await commandOnPath("wt.exe")) || (await commandOnPath("wt"))) {
       launchDetached("wt.exe", ["-d", target])
       return
     }
-    const shellCommand = commandOnPath("pwsh.exe") ? "pwsh.exe" : commandOnPath("powershell.exe") ? "powershell.exe" : ""
+    const shellCommand = (await commandOnPath("pwsh.exe"))
+      ? "pwsh.exe"
+      : (await commandOnPath("powershell.exe"))
+        ? "powershell.exe"
+        : ""
     if (shellCommand) {
       const escaped = target.replace(/'/g, "''")
       launchDetached(shellCommand, ["-NoLogo", "-NoExit", "-Command", `Set-Location -LiteralPath '${escaped}'`])
@@ -360,7 +365,7 @@ function openProjectTerminal(directory: string): void {
     ["xfce4-terminal", ["--working-directory", target]],
   ]
   for (const [command, args] of candidates) {
-    if (!commandOnPath(command)) continue
+    if (!(await commandOnPath(command))) continue
     launchDetached(command, args)
     return
   }
@@ -1112,13 +1117,13 @@ export const handlers: Record<RpcName, Handler> = {
     return result
   },
 
-  "file.write": (path: string, content: string) => {
+  "file.write": async (path: string, content: string) => {
     const project = requireProject()
     const root = resolve(project.path)
     const absolute = resolve(root, path)
     const rel = relative(root, absolute)
     if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Cannot write outside the project directory")
-    writeFileSync(absolute, content, "utf8")
+    await writeFile(absolute, content, "utf8")
   },
 
   "file.find": async (query: string) => {
