@@ -23,6 +23,7 @@ interface UiSmokeResult {
     documentTitle?: string
     readyState?: string
     bodyText?: string
+    loadingBar?: boolean
     state?: {
       appVersion?: string
       platform?: string
@@ -122,6 +123,8 @@ describe.skipIf(!canRun)("packaged Electron smoke", () => {
           readyState: "complete",
         })
         expect(result.renderer?.versions?.electron).toMatch(/^\d+\.\d+\.\d+/)
+        expect(result.renderer?.bodyText).toContain("OpenCode MeowStudio")
+        expect(result.renderer?.loadingBar).toBe(true)
         expect(result.renderer?.state?.appVersion).toBe("1.0.0")
         expect(result.renderer?.state?.platform).toBe("win32")
         expect(resolve(result.renderer?.state?.userDataDir ?? "").toLowerCase()).toBe(

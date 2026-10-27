@@ -84,8 +84,14 @@ export function LspView() {
     try {
       const result = await rpc("market.lsp", force)
       const entries = entriesFromLspRegistry(result.entries)
-      if (entries.length > 0) setMarketEntries(entries)
-      setMarketSource(result.source)
+      if (entries.length > 0) {
+        setMarketEntries(entries)
+        setMarketSource(result.source)
+        setMarketError(null)
+      } else {
+        setMarketSource(null)
+        setMarketError(result.errors?.length ? t("market.fallback") : null)
+      }
     } catch (error) {
       setMarketError((error as Error).message)
     } finally {

@@ -1,6 +1,7 @@
 # OpenCode MeowStudio
 
-[![CI](https://github.com/RoslynMeow/opencodemeowstudio/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RoslynMeow/opencodemeowstudio/actions/workflows/ci.yml)
+[![CI (main)](https://github.com/RoslynMeow/opencodemeowstudio/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RoslynMeow/opencodemeowstudio/actions/workflows/ci.yml?query=branch%3Amain)
+[![CI (dev)](https://github.com/RoslynMeow/opencodemeowstudio/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/RoslynMeow/opencodemeowstudio/actions/workflows/ci.yml?query=branch%3Adev)
 [![Release](https://img.shields.io/github/v/release/RoslynMeow/opencodemeowstudio?label=release&color=e0a458)](https://github.com/RoslynMeow/opencodemeowstudio/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-4f8cff)](https://github.com/RoslynMeow/opencodemeowstudio/releases)
 [![Electron](https://img.shields.io/badge/Electron-44-47848f)](https://www.electronjs.org/)

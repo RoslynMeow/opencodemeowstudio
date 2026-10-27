@@ -40,7 +40,7 @@ import {
   createSessionWorktree,
   currentBranch,
   isGitRepo,
-  listWorktreeView,
+  listWorktreeViewAsync,
   mergeSessionWorktree,
   recordCreatedWorktree,
   removeSessionWorktree,
@@ -112,14 +112,14 @@ afterEach(() => {
 })
 
 describe("repository helpers", () => {
-  it("detects the repository and current branch", () => {
-    expect(isGitRepo(repo)).toBe(true)
-    expect(currentBranch(repo)).toBe("main")
+  it("detects the repository and current branch", async () => {
+    expect(await isGitRepo(repo)).toBe(true)
+    expect(await currentBranch(repo)).toBe("main")
 
     const plain = join(root, "plain")
     mkdirSync(plain)
-    expect(isGitRepo(plain)).toBe(false)
-    expect(currentBranch(plain)).toBeNull()
+    expect(await isGitRepo(plain)).toBe(false)
+    expect(await currentBranch(plain)).toBeNull()
   })
 
   it("places worktrees next to the project in a stable directory", () => {
@@ -130,8 +130,8 @@ describe("repository helpers", () => {
 })
 
 describe("createSessionWorktree", () => {
-  it("creates an isolated branch and copies project config", () => {
-    const created = createSessionWorktree(project)
+  it("creates an isolated branch and copies project config", async () => {
+    const created = await createSessionWorktree(project)
 
     expect(created).not.toBeNull()
     if (!created) return
@@ -143,24 +143,24 @@ describe("createSessionWorktree", () => {
     expect(readFileSync(join(created.path, "app.txt"), "utf8")).toBe("base\n")
     expect(readFileSync(join(created.path, "opencode.json"), "utf8")).toBe('{"test":true}\n')
     expect(readFileSync(join(created.path, ".opencode", "copied.md"), "utf8")).toBe("copied\n")
-    expect(currentBranch(created.path)).toBe(created.branch)
+    expect(await currentBranch(created.path)).toBe(created.branch)
   })
 
-  it("returns null outside a git repository", () => {
+  it("returns null outside a git repository", async () => {
     const plain = join(root, "plain")
     mkdirSync(plain)
-    expect(createSessionWorktree({ ...project, path: plain })).toBeNull()
+    expect(await createSessionWorktree({ ...project, path: plain })).toBeNull()
   })
 
-  it("returns null when the repository has no commits", () => {
+  it("returns null when the repository has no commits", async () => {
     const empty = join(root, "empty")
     mkdirSync(empty)
     git(empty, ["init", "-b", "main"])
-    expect(createSessionWorktree({ ...project, path: empty })).toBeNull()
+    expect(await createSessionWorktree({ ...project, path: empty })).toBeNull()
   })
 
-  it("records and lists an active worktree", () => {
-    const created = createSessionWorktree(project)
+  it("records and lists an active worktree", async () => {
+    const created = await createSessionWorktree(project)
     expect(created).not.toBeNull()
     if (!created) return
 
@@ -174,30 +174,30 @@ describe("createSessionWorktree", () => {
       status: "active",
     })
 
-    const view = listWorktreeView(project)
+    const view = await listWorktreeViewAsync(project)
     expect(view).toMatchObject({ isRepo: true, mainBranch: "main" })
     expect(view.worktrees).toHaveLength(1)
     expect(view.worktrees[0]?.sessionId).toBe(sessionId)
     expect(view.merges).toEqual([])
   })
 
-  it("marks a deleted worktree directory as missing", () => {
-    const created = createSessionWorktree(project)
+  it("marks a deleted worktree directory as missing", async () => {
+    const created = await createSessionWorktree(project)
     expect(created).not.toBeNull()
     if (!created) return
     recordCreatedWorktree(project, sessionId, created)
 
     rmSync(created.path, { recursive: true, force: true })
 
-    const view = listWorktreeView(project)
+    const view = await listWorktreeViewAsync(project)
     expect(view.worktrees[0]?.status).toBe("missing")
     expect(state.worktrees.get(sessionId)?.status).toBe("missing")
   })
 
-  it("reports a non-repository view", () => {
+  it("reports a non-repository view", async () => {
     const plain = join(root, "plain")
     mkdirSync(plain)
-    expect(listWorktreeView({ ...project, path: plain })).toEqual({
+    expect(await listWorktreeViewAsync({ ...project, path: plain })).toEqual({
       isRepo: false,
       worktrees: [],
       merges: [],
@@ -207,7 +207,7 @@ describe("createSessionWorktree", () => {
 
 describe("mergeSessionWorktree", () => {
   it("merges committed worktree changes into the base branch", async () => {
-    const created = createSessionWorktree(project)
+    const created = await createSessionWorktree(project)
     expect(created).not.toBeNull()
     if (!created) return
     const info = recordCreatedWorktree(project, sessionId, created)
@@ -231,13 +231,13 @@ describe("mergeSessionWorktree", () => {
     })
     expect(merge?.commit).toBeTruthy()
 
-    const view = listWorktreeView(project)
+    const view = await listWorktreeViewAsync(project)
     expect(view.worktrees[0]?.status).toBe("merged")
     expect(view.merges[0]?.status).toBe("merged")
   })
 
   it("refuses to merge when the project is not on the base branch", async () => {
-    const created = createSessionWorktree(project)
+    const created = await createSessionWorktree(project)
     expect(created).not.toBeNull()
     if (!created) return
     recordCreatedWorktree(project, sessionId, created)
@@ -249,7 +249,7 @@ describe("mergeSessionWorktree", () => {
   })
 
   it("records a conflict and recovers the merged state after resolution", async () => {
-    const created = createSessionWorktree(project)
+    const created = await createSessionWorktree(project)
     expect(created).not.toBeNull()
     if (!created) return
     const info = recordCreatedWorktree(project, sessionId, created)
@@ -273,7 +273,7 @@ describe("mergeSessionWorktree", () => {
     git(repo, ["commit", "-m", "resolve conflict"])
     expect(gitOperation(repo)).toBeNull()
 
-    const view = listWorktreeView(project)
+    const view = await listWorktreeViewAsync(project)
     expect(view.worktrees[0]).toMatchObject({ status: "merged", sessionId })
     expect(view.worktrees[0]?.error).toBeUndefined()
     expect(view.worktrees[0]?.commit).toBeTruthy()
@@ -282,19 +282,19 @@ describe("mergeSessionWorktree", () => {
   })
 
   it("returns a merged worktree to active after a new commit", async () => {
-    const created = createSessionWorktree(project)
+    const created = await createSessionWorktree(project)
     expect(created).not.toBeNull()
     if (!created) return
     recordCreatedWorktree(project, sessionId, created)
     commit(created.path, "first feature\n", "first feature")
 
     await mergeSessionWorktree(project, sessionId)
-    expect(listWorktreeView(project).worktrees[0]?.status).toBe("merged")
+    expect((await listWorktreeViewAsync(project)).worktrees[0]?.status).toBe("merged")
 
     commit(created.path, "second feature\n", "second feature")
     expect(isAncestor(created.branch, "main")).toBe(false)
 
-    const view = listWorktreeView(project)
+    const view = await listWorktreeViewAsync(project)
     expect(view.worktrees[0]).toMatchObject({ status: "active", sessionId })
     expect(view.worktrees[0]?.mergedAt).toBeUndefined()
     expect(view.worktrees[0]?.commit).toBeUndefined()
@@ -305,14 +305,14 @@ describe("mergeSessionWorktree", () => {
 
 describe("removeSessionWorktree", () => {
   it("cleans up the worktree directory and record but keeps the branch", async () => {
-    const created = createSessionWorktree(project)
+    const created = await createSessionWorktree(project)
     expect(created).not.toBeNull()
     if (!created) return
     recordCreatedWorktree(project, sessionId, created)
     commit(created.path, "merged\n", "merged change")
     await mergeSessionWorktree(project, sessionId)
 
-    removeSessionWorktree(project, sessionId)
+    await removeSessionWorktree(project, sessionId)
 
     expect(existsSync(created.path)).toBe(false)
     expect(state.worktrees.has(sessionId)).toBe(false)
@@ -321,7 +321,8 @@ describe("removeSessionWorktree", () => {
     expect(git(repo, ["worktree", "list", "--porcelain"])).not.toContain(token)
   })
 
-  it("is a no-op for sessions without a worktree", () => {
-    expect(() => removeSessionWorktree(project, "missing-session")).not.toThrow()
+  it("is a no-op for sessions without a worktree", async () => {
+    await expect(removeSessionWorktree(project, "missing-session")).resolves.toBeUndefined()
   })
 })
+

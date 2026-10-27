@@ -1,6 +1,7 @@
 import { app, safeStorage } from "electron"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
+import { mkdir, rename, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { log } from "./logger"
 import { displayProjectName } from "./paths"
@@ -142,16 +143,28 @@ function ensureState(): PersistedState {
   return state as PersistedState
 }
 
+let saveChain: Promise<void> = Promise.resolve()
+
 export function saveStore(): void {
   const current = ensureState()
+  let snapshot: string
   try {
-    mkdirSync(dirname(stateFile), { recursive: true })
-    const temp = `${stateFile}.tmp`
-    writeFileSync(temp, JSON.stringify(current, null, 2), "utf8")
-    renameSync(temp, stateFile)
+    snapshot = JSON.stringify(current, null, 2)
   } catch (error) {
-    log("store", `failed to save state: ${(error as Error).message}`)
+    log("store", `failed to serialize state: ${(error as Error).message}`)
+    return
   }
+  const file = stateFile
+  const temp = `${stateFile}.tmp`
+  saveChain = saveChain
+    .then(async () => {
+      await mkdir(dirname(file), { recursive: true })
+      await writeFile(temp, snapshot, "utf8")
+      await rename(temp, file)
+    })
+    .catch((error) => {
+      log("store", `failed to save state: ${(error as Error).message}`)
+    })
 }
 
 export function getSettings(): Settings {

@@ -40,6 +40,7 @@ export function Sidebar() {
   const state = useStudio((store) => store.state)
   const view = useStudio((store) => store.view)
   const sessions = useStudio((store) => store.sessions)
+  const loadingSessions = useStudio((store) => store.loadingSessions)
   const activeSessionId = useStudio((store) => store.activeSessionId)
   const busy = useStudio((store) => store.busy)
   const setView = useStudio((store) => store.setView)
@@ -292,7 +293,19 @@ export function Sidebar() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-          {rootSessions.length === 0 ? (
+          {loadingSessions && rootSessions.length === 0 ? (
+            <div className="space-y-1 px-1.5 py-1" aria-busy="true" aria-label={t("common.loading")}>
+              {[0, 1, 2, 3].map((index) => (
+                <div key={index} className="rounded-lg px-2 py-1.5">
+                  <div
+                    className="loading-skeleton h-2.5 rounded bg-line-soft"
+                    style={{ width: `${72 - index * 9}%` }}
+                  />
+                  <div className="loading-skeleton mt-1.5 h-2 w-16 rounded bg-line-soft/70" />
+                </div>
+              ))}
+            </div>
+          ) : rootSessions.length === 0 ? (
             <div className="mx-1 mt-1 rounded-xl border border-dashed border-line-soft px-3 py-5 text-center">
               <MessageSquare size={18} className="mx-auto mb-2 text-faint/70" />
               <div className="text-[11.5px] font-medium text-muted">{t("sidebar.noSessions")}</div>

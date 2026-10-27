@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto"
-import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { copyFile, cp, mkdir, rm, symlink } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import type { MergeInfo, Project, WorktreeInfo, WorktreeMergeResult, WorktreeView } from "@shared/types"
-import { gitFailure, gitOperation, runGitAsync, runGitSync } from "./git-service"
+import { gitFailure, gitOperationAsync, runGitAsync } from "./git-service"
 import { log } from "./logger"
 import { getMerges, getWorktree, getWorktrees, removeWorktreeRecord, upsertMerge, upsertWorktree } from "./store"
 
@@ -19,38 +20,38 @@ export function worktreeRoot(project: Project): string {
   return join(dirname(project.path), ".meowstudio-worktrees", `${safeName(basename(project.path))}-${project.id.slice(0, 8)}`)
 }
 
-export function currentBranch(projectPath: string): string | null {
+export async function currentBranch(projectPath: string): Promise<string | null> {
   try {
-    const branch = runGitSync(projectPath, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()
+    const branch = (await runGitAsync(projectPath, ["rev-parse", "--abbrev-ref", "HEAD"], 15_000)).trim()
     return branch && branch !== "HEAD" ? branch : null
   } catch {
     return null
   }
 }
 
-export function isGitRepo(projectPath: string): boolean {
+export async function isGitRepo(projectPath: string): Promise<boolean> {
   try {
-    return runGitSync(projectPath, ["rev-parse", "--is-inside-work-tree"]).trim() === "true"
+    return (await runGitAsync(projectPath, ["rev-parse", "--is-inside-work-tree"], 15_000)).trim() === "true"
   } catch {
     return false
   }
 }
 
-function hasCommit(projectPath: string): boolean {
+async function hasCommit(projectPath: string): Promise<boolean> {
   try {
-    runGitSync(projectPath, ["rev-parse", "--verify", "HEAD"])
+    await runGitAsync(projectPath, ["rev-parse", "--verify", "HEAD"], 15_000)
     return true
   } catch {
     return false
   }
 }
 
-function copyProjectConfig(project: Project, worktreePath: string): void {
+async function copyProjectConfig(project: Project, worktreePath: string): Promise<void> {
   for (const file of CONFIG_FILES) {
     const source = join(project.path, file)
     const target = join(worktreePath, file)
     try {
-      if (existsSync(source)) copyFileSync(source, target)
+      if (existsSync(source)) await copyFile(source, target)
     } catch (error) {
       log("worktree", `copy ${file} failed: ${(error as Error).message}`)
     }
@@ -59,7 +60,7 @@ function copyProjectConfig(project: Project, worktreePath: string): void {
     const source = join(project.path, dir)
     const target = join(worktreePath, dir)
     try {
-      if (existsSync(source)) cpSync(source, target, { recursive: true, force: true })
+      if (existsSync(source)) await cp(source, target, { recursive: true, force: true })
     } catch (error) {
       log("worktree", `copy ${dir} failed: ${(error as Error).message}`)
     }
@@ -69,7 +70,7 @@ function copyProjectConfig(project: Project, worktreePath: string): void {
     const target = join(worktreePath, dir)
     try {
       if (!existsSync(source) || existsSync(target)) continue
-      symlinkSync(source, target, process.platform === "win32" ? "junction" : "dir")
+      await symlink(source, target, process.platform === "win32" ? "junction" : "dir")
     } catch (error) {
       log("worktree", `link ${dir} failed: ${(error as Error).message}`)
     }
@@ -83,34 +84,34 @@ export interface CreatedWorktree {
   createdAt: number
 }
 
-export function createSessionWorktree(project: Project): CreatedWorktree | null {
-  if (!isGitRepo(project.path) || !hasCommit(project.path)) return null
-  const baseBranch = currentBranch(project.path)
+export async function createSessionWorktree(project: Project): Promise<CreatedWorktree | null> {
+  if (!(await isGitRepo(project.path)) || !(await hasCommit(project.path))) return null
+  const baseBranch = await currentBranch(project.path)
   if (!baseBranch) return null
   const root = worktreeRoot(project)
-  mkdirSync(root, { recursive: true })
+  await mkdir(root, { recursive: true })
   const token = randomUUID().slice(0, 8)
   const path = join(root, token)
   const branch = `${BRANCH_PREFIX}-${token}`
   try {
-    runGitSync(project.path, ["worktree", "add", "-b", branch, path, baseBranch], 120_000)
+    await runGitAsync(project.path, ["worktree", "add", "-b", branch, path, baseBranch], 120_000)
   } catch (error) {
     try {
-      runGitSync(project.path, ["worktree", "prune"])
+      await runGitAsync(project.path, ["worktree", "prune"], 30_000)
     } catch {
       // ignore
     }
-    rmSync(path, { recursive: true, force: true })
+    await rm(path, { recursive: true, force: true })
     log("worktree", `create failed: ${(error as Error).message}`)
     return null
   }
-  copyProjectConfig(project, path)
+  await copyProjectConfig(project, path)
   return { path, branch, baseBranch, createdAt: Date.now() }
 }
 
-export function syncWorktreeConfigs(project: Project): void {
+export async function syncWorktreeConfigs(project: Project): Promise<void> {
   for (const info of getWorktrees(project.id)) {
-    if (existsSync(info.path)) copyProjectConfig(project, info.path)
+    if (existsSync(info.path)) await copyProjectConfig(project, info.path)
   }
 }
 
@@ -130,37 +131,40 @@ export function recordCreatedWorktree(project: Project, sessionId: string, creat
   return info
 }
 
-function isAncestor(projectPath: string, branch: string, target: string): boolean {
+async function isAncestorAsync(projectPath: string, branch: string, target: string): Promise<boolean> {
   try {
-    runGitSync(projectPath, ["merge-base", "--is-ancestor", branch, target])
+    await runGitAsync(projectPath, ["merge-base", "--is-ancestor", branch, target], 30_000)
     return true
   } catch {
     return false
   }
 }
 
-export function listWorktreeView(project: Project): WorktreeView {
-  const isRepo = isGitRepo(project.path)
-  if (!isRepo) return { isRepo: false, worktrees: [], merges: [] }
-  const mainBranch = currentBranch(project.path) ?? undefined
-  const operation = gitOperation(project.path)
-  const worktrees = getWorktrees(project.id).map((info) => {
+export async function listWorktreeViewAsync(project: Project): Promise<WorktreeView> {
+  if (!(await isGitRepo(project.path))) return { isRepo: false, worktrees: [], merges: [] }
+  const mainBranch = (await currentBranch(project.path)) ?? undefined
+  const operation = await gitOperationAsync(project.path)
+  const worktrees: WorktreeInfo[] = []
+  for (const info of getWorktrees(project.id)) {
     if (!existsSync(info.path)) {
       if (info.status !== "missing") {
         const next = { ...info, status: "missing" as const, updatedAt: Date.now() }
         upsertWorktree(next)
-        return next
+        worktrees.push(next)
+      } else {
+        worktrees.push(info)
       }
-      return info
+      continue
     }
-    if (info.status === "merged" && !isAncestor(project.path, info.branch, info.baseBranch)) {
+    if (info.status === "merged" && !(await isAncestorAsync(project.path, info.branch, info.baseBranch))) {
       const next: WorktreeInfo = { ...info, status: "active", updatedAt: Date.now(), mergedAt: undefined, commit: undefined }
       upsertWorktree(next)
-      return next
+      worktrees.push(next)
+      continue
     }
     if (info.status === "conflict" && !operation) {
-      if (isAncestor(project.path, info.branch, info.baseBranch)) {
-        const commit = runGitSync(project.path, ["rev-parse", "--short", info.baseBranch]).trim()
+      if (await isAncestorAsync(project.path, info.branch, info.baseBranch)) {
+        const commit = (await runGitAsync(project.path, ["rev-parse", "--short", info.baseBranch], 15_000)).trim()
         const next: WorktreeInfo = {
           ...info,
           status: "merged",
@@ -176,14 +180,16 @@ export function listWorktreeView(project: Project): WorktreeView {
         if (latest?.status === "conflict") {
           upsertMerge({ ...latest, status: "merged", commit, message: undefined, updatedAt: Date.now() })
         }
-        return next
+        worktrees.push(next)
+        continue
       }
       const next: WorktreeInfo = { ...info, status: "active", updatedAt: Date.now(), error: undefined }
       upsertWorktree(next)
-      return next
+      worktrees.push(next)
+      continue
     }
-    return info
-  })
+    worktrees.push(info)
+  }
   return { isRepo: true, mainBranch, worktrees, merges: getMerges(project.id) }
 }
 
@@ -191,7 +197,7 @@ export async function mergeSessionWorktree(project: Project, sessionId: string):
   const info = getWorktree(sessionId)
   if (!info) throw new Error("This session does not have a worktree")
   if (!existsSync(info.path)) throw new Error("The session worktree is missing")
-  const current = currentBranch(project.path)
+  const current = await currentBranch(project.path)
   if (!current || current !== info.baseBranch) {
     throw new Error(`Switch the main project to ${info.baseBranch} before merging`)
   }
@@ -202,10 +208,10 @@ export async function mergeSessionWorktree(project: Project, sessionId: string):
   let commit: string | undefined
   try {
     output = await runGitAsync(project.path, ["merge", "--no-edit", info.branch], 180_000)
-    commit = runGitSync(project.path, ["rev-parse", "--short", "HEAD"]).trim()
+    commit = (await runGitAsync(project.path, ["rev-parse", "--short", "HEAD"], 15_000)).trim()
   } catch (error) {
     output = gitFailure(error)
-    status = gitOperation(project.path) === "merge" ? "conflict" : "active"
+    status = (await gitOperationAsync(project.path)) === "merge" ? "conflict" : "active"
     message = status === "conflict" ? "Merge conflicts need resolution" : output
   }
 
@@ -234,17 +240,17 @@ export async function mergeSessionWorktree(project: Project, sessionId: string):
   return { ok: status === "merged", status, output, worktree: next, merge }
 }
 
-export function removeSessionWorktree(project: Project, sessionId: string): void {
+export async function removeSessionWorktree(project: Project, sessionId: string): Promise<void> {
   const info = getWorktree(sessionId)
   if (!info) return
   try {
-    runGitSync(project.path, ["worktree", "remove", "--force", info.path], 60_000)
+    await runGitAsync(project.path, ["worktree", "remove", "--force", info.path], 60_000)
   } catch (error) {
     log("worktree", `remove ${info.path} failed: ${(error as Error).message}`)
-    rmSync(info.path, { recursive: true, force: true })
+    await rm(info.path, { recursive: true, force: true })
   }
   try {
-    runGitSync(project.path, ["worktree", "prune"])
+    await runGitAsync(project.path, ["worktree", "prune"], 30_000)
   } catch {
     // ignore
   }

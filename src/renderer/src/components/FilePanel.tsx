@@ -1,5 +1,6 @@
 import clsx from "clsx"
 import {
+  AlertCircle,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -23,14 +24,14 @@ import {
   Search,
   X,
 } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { FileContentInfo, FileDiff, FileNodeInfo, GitDiffContent, GitEnvironment, GitFileStatus, GitInfo } from "@shared/types"
 import { Button, EmptyState, IconButton, Spinner } from "./ui"
 import { UnifiedDiff } from "./UnifiedDiff"
 import { GitGraph } from "./GitGraph"
 import { GitSetup } from "./GitSetup"
 import { CodeEditor } from "./CodeEditor"
-import { rpc } from "../lib/rpc"
+import { formatError, rpc } from "../lib/rpc"
 import { useStudio } from "../store/useStore"
 import { useT } from "../i18n/useT"
 
@@ -126,6 +127,11 @@ export function FilePanel({
   const [gitEnvironment, setGitEnvironment] = useState<GitEnvironment | null>(null)
   const [graphRefreshKey, setGraphRefreshKey] = useState(0)
   const [gitLoading, setGitLoading] = useState(false)
+  const [gitError, setGitError] = useState<string | null>(null)
+  const [treeError, setTreeError] = useState<{ path: string; message: string } | null>(null)
+  const inflightDirs = useRef(new Map<string, Promise<void>>())
+  const treeEpoch = useRef(0)
+  const gitLoadingRef = useRef(false)
   const [selectedGitPath, setSelectedGitPath] = useState<string | null>(null)
   const [selectedGitStaged, setSelectedGitStaged] = useState(false)
   const [gitDiff, setGitDiff] = useState<GitDiffContent | null>(null)
@@ -135,31 +141,52 @@ export function FilePanel({
 
   const loadDir = async (path: string) => {
     if (state?.backend.state !== "running") return
+    const existing = inflightDirs.current.get(path)
+    if (existing) return existing
+    const epoch = treeEpoch.current
     setLoadingDirs((current) => new Set(current).add(path))
+    const task = (async () => {
+      try {
+        const nodes = await rpc("file.list", path)
+        if (epoch !== treeEpoch.current) return
+        setChildren((current) => ({
+          ...current,
+          [path]: nodes.filter((node) => !node.ignored).sort(sortNodes),
+        }))
+        setTreeError((current) => (current?.path === path ? null : current))
+      } catch (error) {
+        if (epoch === treeEpoch.current) setTreeError({ path, message: formatError(error) })
+      } finally {
+        setLoadingDirs((current) => {
+          const next = new Set(current)
+          next.delete(path)
+          return next
+        })
+      }
+    })()
+    inflightDirs.current.set(path, task)
     try {
-      const nodes = await rpc("file.list", path)
-      setChildren((current) => ({
-        ...current,
-        [path]: nodes.filter((node) => !node.ignored).sort(sortNodes),
-      }))
-    } catch (error) {
-      addToast("error", (error as Error).message)
+      await task
     } finally {
-      setLoadingDirs((current) => {
-        const next = new Set(current)
-        next.delete(path)
-        return next
-      })
+      inflightDirs.current.delete(path)
     }
   }
 
   useEffect(() => {
+    treeEpoch.current += 1
+    inflightDirs.current.clear()
     setChildren({})
     setExpanded(new Set(["."]))
     setSelectedPath(null)
     setContent(null)
     setQuery("")
     setSearchResults(null)
+    setTreeError(null)
+    setGitInfo(null)
+    setGitEnvironment(null)
+    setGitError(null)
+    setSelectedGitPath(null)
+    setGitDiff(null)
     if (project && state?.backend.state === "running") void loadDir(".")
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id])
@@ -221,12 +248,14 @@ export function FilePanel({
   }
 
   const loadGit = async () => {
-    if (state?.backend.state !== "running") return
+    if (state?.backend.state !== "running" || gitLoadingRef.current) return
+    gitLoadingRef.current = true
     setGitLoading(true)
     try {
       const [info, environment] = await Promise.all([rpc("git.info"), rpc("git.environment")])
       setGitInfo(info)
       setGitEnvironment(environment)
+      setGitError(null)
       if (info.isRepo) {
         const all = [...info.staged, ...info.unstaged]
         const current = selectedGitPath ? all.find((file) => file.path === selectedGitPath) : undefined
@@ -243,8 +272,9 @@ export function FilePanel({
         setSelectedGitPath(null)
       }
     } catch (error) {
-      addToast("error", (error as Error).message)
+      setGitError(formatError(error))
     } finally {
+      gitLoadingRef.current = false
       setGitLoading(false)
     }
   }
@@ -506,6 +536,19 @@ export function FilePanel({
             </IconButton>
           </div>
 
+          {treeError && (
+            <div
+              className="mx-1 mb-1 flex items-start gap-1.5 rounded-lg border border-warn/30 bg-warn/5 px-2 py-1.5 text-[10.5px] text-warn"
+              title={treeError.message}
+            >
+              <AlertCircle size={12} className="mt-0.5 shrink-0" />
+              <span className="min-w-0 flex-1">{t("files.loadError")}</span>
+              <button className="shrink-0 underline" onClick={() => void loadDir(treeError.path)}>
+                {t("common.retry")}
+              </button>
+            </div>
+          )}
+
           <div className="min-h-0 flex-[0.9] overflow-y-auto px-1 py-1.5">
             {query.trim() ? (
               <div>
@@ -558,8 +601,14 @@ export function FilePanel({
                 </button>
                 {expanded.has(".") &&
                   (loadingDirs.has(".") && !children["."] ? (
-                    <div className="flex items-center gap-1.5 px-6 py-2 text-[10px] text-faint">
-                      <Spinner size={9} /> {t("common.loading")}
+                    <div className="space-y-1.5 px-6 py-2" aria-busy="true" aria-label={t("common.loading")}>
+                      {[0, 1, 2, 3].map((index) => (
+                        <div
+                          key={index}
+                          className="loading-skeleton h-2.5 rounded bg-line-soft"
+                          style={{ width: `${68 - index * 9}%` }}
+                        />
+                      ))}
                     </div>
                   ) : (
                     renderTree(".", 1)
@@ -732,8 +781,9 @@ export function FilePanel({
                   <span>{t("files.changedFiles", { count: diff.length })}</span>
                   <span className="text-good">+{totals.additions}</span>
                   <span className="text-bad">-{totals.deletions}</span>
+                  {diffLoading && <Spinner size={9} className="ml-auto text-faint" />}
                 </div>
-                {diffLoading ? (
+                {diffLoading && diff.length === 0 ? (
                   <div className="flex items-center justify-center py-10 text-faint">
                     <Spinner />
                   </div>
@@ -778,9 +828,21 @@ export function FilePanel({
                 <EmptyState title={t("files.noSession")} description={t("files.noChangesHint")} />
               </div>
             )
-          ) : !gitInfo || gitLoading ? (
-            <div className="flex items-center justify-center py-10 text-faint">
-              <Spinner />
+          ) : !gitInfo ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-10 text-faint">
+              {gitError ? (
+                <>
+                  <AlertCircle size={16} className="text-warn" />
+                  <span className="max-w-[250px] text-center text-[10.5px] text-warn" title={gitError}>
+                    {t("git.loadError")}
+                  </span>
+                  <Button className="h-7 px-2 text-[11px]" onClick={() => void loadGit()}>
+                    {t("common.retry")}
+                  </Button>
+                </>
+              ) : (
+                <Spinner />
+              )}
             </div>
           ) : !gitEnvironment || !gitEnvironment.available || !gitInfo.isRepo ? (
             <div className="h-full overflow-y-auto">
@@ -788,6 +850,18 @@ export function FilePanel({
             </div>
           ) : (
             <>
+              {gitError && (
+                <div
+                  className="flex items-start gap-1.5 border-b border-warn/30 bg-warn/5 px-2 py-1.5 text-[10.5px] text-warn"
+                  title={gitError}
+                >
+                  <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                  <span className="min-w-0 flex-1">{t("git.loadError")}</span>
+                  <button className="shrink-0 underline" onClick={() => void loadGit()}>
+                    {t("common.retry")}
+                  </button>
+                </div>
+              )}
               <div className="flex items-center gap-2 border-b border-line px-2.5 py-2 text-[10.5px]">
                 <GitBranch size={12} className="text-accent" />
                 <span className="min-w-0 truncate font-mono text-[11px] text-ink">{gitInfo.branch ?? "HEAD"}</span>
@@ -798,6 +872,7 @@ export function FilePanel({
                     ? t("git.clean")
                     : t("git.staged") + " " + gitInfo.staged.length + " · " + t("git.unstaged") + " " + gitInfo.unstaged.length}
                 </span>
+                {gitLoading && <Spinner size={10} className="text-faint" />}
                 <IconButton className="h-5 w-5" title={t("common.refresh")} onClick={() => void loadGit()}>
                   <RefreshCw size={10} />
                 </IconButton>
@@ -844,12 +919,12 @@ export function FilePanel({
 
               <div className="min-h-0 flex-1 overflow-hidden">
                 {selectedGitPath ? (
-                  gitDiffLoading ? (
+                  gitDiff ? (
+                    <UnifiedDiff before={gitDiff.before} after={gitDiff.after} className="h-full" />
+                  ) : gitDiffLoading ? (
                     <div className="flex items-center justify-center py-10 text-faint">
                       <Spinner />
                     </div>
-                  ) : gitDiff ? (
-                    <UnifiedDiff before={gitDiff.before} after={gitDiff.after} className="h-full" />
                   ) : (
                     <div className="px-3 py-8 text-center text-[11px] text-faint">{t("git.diffUnavailable")}</div>
                   )

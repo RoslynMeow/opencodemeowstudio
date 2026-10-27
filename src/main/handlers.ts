@@ -1,7 +1,8 @@
 import type { OpencodeClient } from "@opencode-ai/sdk"
 import { app, dialog, shell } from "electron"
-import { spawn, spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { execFile, spawn } from "node:child_process"
+import { existsSync, mkdirSync, statSync } from "node:fs"
+import { readFile, writeFile } from "node:fs/promises"
 import { isAbsolute, relative, resolve } from "node:path"
 import type {
   Agent,
@@ -18,10 +19,12 @@ import type {
   GitInfo,
   LspConfig,
   LspEntry,
+  LspRegistryMarket,
   LspViewData,
   McpAuthStart,
   McpConfig,
   McpEntry,
+  McpRegistryMarket,
   McpStatus,
   McpViewData,
   Message,
@@ -77,36 +80,36 @@ import {
 import { configPaths, globalPluginsDir, projectPluginsDir } from "./paths"
 import {
   createSessionWorktree,
-  listWorktreeView,
+  listWorktreeViewAsync,
   mergeSessionWorktree,
   recordCreatedWorktree,
   removeSessionWorktree,
   syncWorktreeConfigs,
 } from "./worktree-service"
 import {
-  detectGit,
+  detectGitAsync,
   gitAbort,
-  gitBranches,
+  gitBranchesAsync,
   gitCheckout,
   gitContinue,
   gitDeleteBranch,
-  gitCommitDetail,
+  gitCommitDetailAsync,
   gitCreateBranch,
   gitFailure,
   gitFetch,
-  gitGraph,
+  gitGraphAsync,
   gitInit,
   gitMerge,
-  gitOperation,
+  gitOperationAsync,
   gitRebase,
   gitPull,
   gitPush,
-  gitRemotes,
+  gitRemotesAsync,
   gitStash,
   gitStashPop,
   gitTag,
   installGit,
-  runGitSync,
+  runGitAsync,
 } from "./git-service"
 import { ensureRuntime, listRuntimeVersions } from "./runtime"
 import { fetchLspRegistry, fetchMcpRegistry } from "./market-service"
@@ -121,18 +124,18 @@ function asRecord(value: unknown): Record<string, unknown> {
   return {}
 }
 
-function readGitFileDiff(projectPath: string, file: string): { before: string; after: string } {
+async function readGitFileDiff(projectPath: string, file: string): Promise<{ before: string; after: string }> {
   const normalized = file.replace(/\\/g, "/")
   let before = ""
   try {
-    before = runGitSync(projectPath, ["show", `HEAD:${normalized}`])
+    before = await runGitAsync(projectPath, ["show", `HEAD:${normalized}`], 30_000)
   } catch {
     before = ""
   }
   let after = ""
   try {
     const absolute = resolve(projectPath, file)
-    if (existsSync(absolute)) after = readFileSync(absolute, "utf8")
+    if (existsSync(absolute)) after = (await readFile(absolute)).toString("utf8")
   } catch {
     after = ""
   }
@@ -140,13 +143,9 @@ function readGitFileDiff(projectPath: string, file: string): { before: string; a
   return { before: before.slice(0, max), after: after.slice(0, max) }
 }
 
-function runGit(projectPath: string, args: string[]): string {
-  return runGitSync(projectPath, args)
-}
-
-function getGitInfo(): GitInfo {
+async function getGitInfoAsync(): Promise<GitInfo> {
   const project = requireProject()
-  const environment = detectGit()
+  const environment = await detectGitAsync()
   if (!environment.available) {
     return {
       isRepo: false,
@@ -157,7 +156,7 @@ function getGitInfo(): GitInfo {
     }
   }
   try {
-    runGit(project.path, ["rev-parse", "--is-inside-work-tree"])
+    await runGitAsync(project.path, ["rev-parse", "--is-inside-work-tree"], 15_000)
   } catch {
     return {
       isRepo: false,
@@ -175,21 +174,27 @@ function getGitInfo(): GitInfo {
   let ahead: number | undefined
   let behind: number | undefined
   try {
-    root = runGit(project.path, ["rev-parse", "--show-toplevel"]).trim()
+    root = (await runGitAsync(project.path, ["rev-parse", "--show-toplevel"], 15_000)).trim()
   } catch {
     root = undefined
   }
   try {
-    branch = runGit(project.path, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()
+    branch = (await runGitAsync(project.path, ["rev-parse", "--abbrev-ref", "HEAD"], 15_000)).trim()
     if (branch === "HEAD") {
-      branch = runGit(project.path, ["rev-parse", "--short", "HEAD"]).trim()
+      branch = (await runGitAsync(project.path, ["rev-parse", "--short", "HEAD"], 15_000)).trim()
     }
   } catch {
     branch = undefined
   }
   try {
-    upstream = runGit(project.path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim()
-    const counts = runGit(project.path, ["rev-list", "--left-right", "--count", "@{u}...HEAD"]).trim().split(/\s+/)
+    upstream = (
+      await runGitAsync(project.path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 15_000)
+    ).trim()
+    const counts = (
+      await runGitAsync(project.path, ["rev-list", "--left-right", "--count", "@{u}...HEAD"], 30_000)
+    )
+      .trim()
+      .split(/\s+/)
     behind = Number(counts[0] ?? 0)
     ahead = Number(counts[1] ?? 0)
   } catch {
@@ -198,7 +203,7 @@ function getGitInfo(): GitInfo {
 
   const files: GitFileStatus[] = []
   const conflicts: string[] = []
-  const output = runGit(project.path, ["status", "--porcelain=v1", "-uall"])
+  const output = await runGitAsync(project.path, ["status", "--porcelain=v1", "-uall"], 120_000)
   for (const line of output.split(/\r?\n/)) {
     if (!line.trim()) continue
     const index = line[0] ?? " "
@@ -216,11 +221,11 @@ function getGitInfo(): GitInfo {
     files.push({ path, index, worktree, staged, unstaged, untracked, status })
   }
   files.sort((a, b) => a.path.localeCompare(b.path))
-  const remotes = gitRemotes(project.path)
+  const remotes = await gitRemotesAsync(project.path)
   const remote = remotes.find((entry) => entry.name === "origin") ?? remotes[0]
   let stashCount = 0
   try {
-    stashCount = runGit(project.path, ["stash", "list"]).split(/\r?\n/).filter(Boolean).length
+    stashCount = (await runGitAsync(project.path, ["stash", "list"], 15_000)).split(/\r?\n/).filter(Boolean).length
   } catch {
     stashCount = 0
   }
@@ -239,17 +244,17 @@ function getGitInfo(): GitInfo {
     remoteUrl: remote?.url,
     githubUrl: remote?.github?.url,
     conflicts,
-    operation: gitOperation(project.path),
+    operation: await gitOperationAsync(project.path),
     stashCount,
   }
 }
 
-function gitDiffContent(path: string, staged: boolean): GitDiffContent {
+async function gitDiffContentAsync(path: string, staged: boolean): Promise<GitDiffContent> {
   const project = requireProject()
   const normalized = path.replace(/\\/g, "/")
-  const show = (ref: string): string => {
+  const show = async (ref: string): Promise<string> => {
     try {
-      return runGit(project.path, ["show", `${ref}:${normalized}`])
+      return await runGitAsync(project.path, ["show", `${ref}:${normalized}`], 30_000)
     } catch {
       return ""
     }
@@ -257,15 +262,15 @@ function gitDiffContent(path: string, staged: boolean): GitDiffContent {
   let before = ""
   let after = ""
   if (staged) {
-    before = show("HEAD")
-    after = show("")
+    before = await show("HEAD")
+    after = await show("")
   } else {
-    before = show("")
-    if (!before) before = show("HEAD")
+    before = await show("")
+    if (!before) before = await show("HEAD")
     try {
       const absolute = resolve(project.path, path)
       if (existsSync(absolute)) {
-        const buffer = readFileSync(absolute)
+        const buffer = await readFile(absolute)
         if (!buffer.includes(0)) after = buffer.toString("utf8")
       }
     } catch {
@@ -315,10 +320,11 @@ async function clientForSession(id: string): Promise<OpencodeClient> {
   return getClient(await sessionDirectory(id))
 }
 
-function commandOnPath(command: string): boolean {
+function commandOnPath(command: string): Promise<boolean> {
   const finder = process.platform === "win32" ? "where.exe" : "which"
-  const result = spawnSync(finder, [command], { windowsHide: true, encoding: "utf8" })
-  return result.status === 0
+  return new Promise((resolve) => {
+    execFile(finder, [command], { windowsHide: true }, (error) => resolve(!error))
+  })
 }
 
 function launchDetached(command: string, args: string[]): void {
@@ -327,15 +333,19 @@ function launchDetached(command: string, args: string[]): void {
   child.unref()
 }
 
-function openProjectTerminal(directory: string): void {
+async function openProjectTerminal(directory: string): Promise<void> {
   const target = resolve(directory)
   if (!existsSync(target)) throw new Error("Project directory does not exist")
   if (process.platform === "win32") {
-    if (commandOnPath("wt.exe") || commandOnPath("wt")) {
+    if ((await commandOnPath("wt.exe")) || (await commandOnPath("wt"))) {
       launchDetached("wt.exe", ["-d", target])
       return
     }
-    const shellCommand = commandOnPath("pwsh.exe") ? "pwsh.exe" : commandOnPath("powershell.exe") ? "powershell.exe" : ""
+    const shellCommand = (await commandOnPath("pwsh.exe"))
+      ? "pwsh.exe"
+      : (await commandOnPath("powershell.exe"))
+        ? "powershell.exe"
+        : ""
     if (shellCommand) {
       const escaped = target.replace(/'/g, "''")
       launchDetached(shellCommand, ["-NoLogo", "-NoExit", "-Command", `Set-Location -LiteralPath '${escaped}'`])
@@ -355,7 +365,7 @@ function openProjectTerminal(directory: string): void {
     ["xfce4-terminal", ["--working-directory", target]],
   ]
   for (const [command, args] of candidates) {
-    if (!commandOnPath(command)) continue
+    if (!(await commandOnPath(command))) continue
     launchDetached(command, args)
     return
   }
@@ -626,7 +636,7 @@ async function runGitOperation(operation: (path: string) => string | Promise<str
   const project = requireProject()
   try {
     const output = await operation(project.path)
-    return { ok: true, output, info: getGitInfo() }
+    return { ok: true, output, info: await getGitInfoAsync() }
   } catch (error) {
     throw new Error(gitFailure(error))
   }
@@ -641,7 +651,7 @@ async function runConflictableGitOperation(operation: (path: string) => Promise<
   } catch (error) {
     failure = gitFailure(error)
   }
-  const info = getGitInfo()
+  const info = await getGitInfoAsync()
   if ((info.conflicts?.length ?? 0) > 0 || info.operation) {
     return { ok: false, output: output || failure, info }
   }
@@ -835,7 +845,7 @@ export const handlers: Record<RpcName, Handler> = {
   "session.create": async (title?: string) => {
     const project = requireProject()
     const useWorktree = getSettings().sessionWorktrees !== false
-    const created = useWorktree ? createSessionWorktree(project) : null
+    const created = useWorktree ? await createSessionWorktree(project) : null
     const client = created ? getClient(created.path) : clientFor()
     try {
       const session = await call<Session>(client.session.create({ body: { title: title || "New chat" } }))
@@ -845,9 +855,9 @@ export const handlers: Record<RpcName, Handler> = {
     } catch (error) {
       if (created) {
         try {
-          runGitSync(project.path, ["worktree", "remove", "--force", created.path])
-          runGitSync(project.path, ["worktree", "prune"])
-          runGitSync(project.path, ["branch", "-D", created.branch])
+          await runGitAsync(project.path, ["worktree", "remove", "--force", created.path], 60_000)
+          await runGitAsync(project.path, ["worktree", "prune"], 30_000)
+          await runGitAsync(project.path, ["branch", "-D", created.branch], 30_000)
         } catch {
           // ignore cleanup failure
         }
@@ -888,7 +898,7 @@ export const handlers: Record<RpcName, Handler> = {
       await call<boolean>(client.session.delete({ path: { id: sessionId } }))
       sessionDirectories.delete(sessionId)
     }
-    if (getWorktree(id)) removeSessionWorktree(project, id)
+    if (getWorktree(id)) await removeSessionWorktree(project, id)
     return true
   },
 
@@ -942,12 +952,15 @@ export const handlers: Record<RpcName, Handler> = {
       }
     }
     const project = requireProject()
-    return order.flatMap((file) => {
-      const value = merged.get(file)
-      if (!value) return []
-      if (value.before || value.after) return [value]
-      return [{ ...value, ...readGitFileDiff(project.path, file) }]
-    })
+    const rows = await Promise.all(
+      order.map(async (file) => {
+        const value = merged.get(file)
+        if (!value) return null
+        if (value.before || value.after) return value
+        return { ...value, ...(await readGitFileDiff(project.path, file)) }
+      }),
+    )
+    return rows.filter((row): row is FileDiff => row !== null)
   },
 
   "session.usage": async (ids: string[]) => {
@@ -1011,7 +1024,7 @@ export const handlers: Record<RpcName, Handler> = {
     return statuses
   },
 
-  "worktree.list": () => listWorktreeView(requireProject()),
+  "worktree.list": () => listWorktreeViewAsync(requireProject()),
 
   "worktree.merge": async (sessionId: string) => {
     const project = requireProject()
@@ -1020,8 +1033,8 @@ export const handlers: Record<RpcName, Handler> = {
 
   "worktree.remove": async (sessionId: string) => {
     const project = requireProject()
-    removeSessionWorktree(project, sessionId)
-    return listWorktreeView(project)
+    await removeSessionWorktree(project, sessionId)
+    return listWorktreeViewAsync(project)
   },
 
   "chat.send": async (input: ChatInput) => {
@@ -1104,45 +1117,45 @@ export const handlers: Record<RpcName, Handler> = {
     return result
   },
 
-  "file.write": (path: string, content: string) => {
+  "file.write": async (path: string, content: string) => {
     const project = requireProject()
     const root = resolve(project.path)
     const absolute = resolve(root, path)
     const rel = relative(root, absolute)
     if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Cannot write outside the project directory")
-    writeFileSync(absolute, content, "utf8")
+    await writeFile(absolute, content, "utf8")
   },
 
   "file.find": async (query: string) => {
     return call<string[]>(clientFor().find.files({ query: { query } }))
   },
 
-  "git.info": () => getGitInfo(),
+  "git.info": () => getGitInfoAsync(),
 
-  "git.environment": () => detectGit(true),
+  "git.environment": () => detectGitAsync(false),
 
   "git.install": () => installGit(),
 
   "git.init": async () => runGitOperation((path) => gitInit(path)),
 
-  "git.graph": (limit?: number) => {
+  "git.graph": async (limit?: number) => {
     const project = requireProject()
-    return gitGraph(project.path, limit)
+    return gitGraphAsync(project.path, limit)
   },
 
-  "git.commitDetail": (hash: string) => {
+  "git.commitDetail": async (hash: string) => {
     const project = requireProject()
-    return gitCommitDetail(project.path, hash)
+    return gitCommitDetailAsync(project.path, hash)
   },
 
-  "git.branches": () => {
+  "git.branches": async () => {
     const project = requireProject()
-    return gitBranches(project.path)
+    return gitBranchesAsync(project.path)
   },
 
-  "git.remotes": () => {
+  "git.remotes": async () => {
     const project = requireProject()
-    return gitRemotes(project.path)
+    return gitRemotesAsync(project.path)
   },
 
   "git.fetch": () => runGitOperation((path) => gitFetch(path)),
@@ -1176,12 +1189,12 @@ export const handlers: Record<RpcName, Handler> = {
     const normalized = paths.filter(Boolean).map((path) => path.replace(/\\/g, "/"))
     if (normalized.length > 0) {
       try {
-        runGit(project.path, ["add", "--", ...normalized])
+        await runGitAsync(project.path, ["add", "--", ...normalized], 60_000)
       } catch (error) {
         throw new Error(gitFailure(error))
       }
     }
-    return getGitInfo()
+    return getGitInfoAsync()
   },
 
   "git.unstage": async (paths: string[]) => {
@@ -1189,20 +1202,20 @@ export const handlers: Record<RpcName, Handler> = {
     const normalized = paths.filter(Boolean).map((path) => path.replace(/\\/g, "/"))
     if (normalized.length > 0) {
       try {
-        runGit(project.path, ["restore", "--staged", "--", ...normalized])
+        await runGitAsync(project.path, ["restore", "--staged", "--", ...normalized], 60_000)
       } catch {
         try {
-          runGit(project.path, ["reset", "-q", "HEAD", "--", ...normalized])
+          await runGitAsync(project.path, ["reset", "-q", "HEAD", "--", ...normalized], 60_000)
         } catch {
           try {
-            runGit(project.path, ["rm", "--cached", "-r", "--", ...normalized])
+            await runGitAsync(project.path, ["rm", "--cached", "-r", "--", ...normalized], 60_000)
           } catch (error) {
             throw new Error(gitFailure(error))
           }
         }
       }
     }
-    return getGitInfo()
+    return getGitInfoAsync()
   },
 
   "git.commit": async (message: string) => {
@@ -1210,14 +1223,14 @@ export const handlers: Record<RpcName, Handler> = {
     const trimmed = message.trim()
     if (!trimmed) throw new Error("Commit message is required")
     try {
-      const output = runGit(project.path, ["commit", "-m", trimmed])
-      return { ok: true, info: getGitInfo(), output }
+      const output = await runGitAsync(project.path, ["commit", "-m", trimmed], 120_000)
+      return { ok: true, info: await getGitInfoAsync(), output }
     } catch (error) {
       throw new Error(gitFailure(error))
     }
   },
 
-  "git.diff": (path: string, staged: boolean) => gitDiffContent(path, staged),
+  "git.diff": (path: string, staged: boolean) => gitDiffContentAsync(path, staged),
 
   "config.read": (scope: ConfigScope) => readRawConfig(scope),
 
@@ -1226,7 +1239,7 @@ export const handlers: Record<RpcName, Handler> = {
     await applyConfigChange()
     if (scope === "project") {
       const project = getActiveProject()
-      if (project) syncWorktreeConfigs(project)
+      if (project) await syncWorktreeConfigs(project)
     }
     return result
   },
@@ -1236,7 +1249,7 @@ export const handlers: Record<RpcName, Handler> = {
     await applyConfigChange()
     if (scope === "project") {
       const project = getActiveProject()
-      if (project) syncWorktreeConfigs(project)
+      if (project) await syncWorktreeConfigs(project)
     }
     return result
   },
@@ -1246,7 +1259,7 @@ export const handlers: Record<RpcName, Handler> = {
     await applyConfigChange()
     if (scope === "project") {
       const project = getActiveProject()
-      if (project) syncWorktreeConfigs(project)
+      if (project) await syncWorktreeConfigs(project)
     }
     return result
   },
@@ -1255,9 +1268,21 @@ export const handlers: Record<RpcName, Handler> = {
 
   "config.paths": () => configPaths(getActiveProject(), getSettings().profile),
 
-  "market.mcp": (force?: boolean) => fetchMcpRegistry(force),
+  "market.mcp": async (force?: boolean): Promise<McpRegistryMarket> => {
+    try {
+      return await fetchMcpRegistry(force)
+    } catch (error) {
+      return { entries: [], fetchedAt: Date.now(), source: "", errors: [(error as Error).message] }
+    }
+  },
 
-  "market.lsp": (force?: boolean) => fetchLspRegistry(force),
+  "market.lsp": async (force?: boolean): Promise<LspRegistryMarket> => {
+    try {
+      return await fetchLspRegistry(force)
+    } catch (error) {
+      return { entries: [], fetchedAt: Date.now(), source: "", errors: [(error as Error).message] }
+    }
+  },
 
   "mcp.view": () => mcpView(),
 

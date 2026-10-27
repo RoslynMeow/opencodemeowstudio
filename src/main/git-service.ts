@@ -111,6 +111,72 @@ export function detectGit(force = false): GitEnvironment {
   }
 }
 
+function execFileText(executable: string, args: string[], timeout: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(executable, args, { encoding: "utf8", timeout, windowsHide: true }, (error, stdout, stderr) => {
+      if (error) {
+        const message = [stderr, stdout].filter(Boolean).join("\n").trim() || error.message
+        reject(new Error(message))
+        return
+      }
+      resolve(stdout)
+    })
+  })
+}
+
+async function resolveGitExecutableAsync(force = false): Promise<string | null> {
+  if (!force && cachedExecutable !== undefined) return cachedExecutable
+  for (const candidate of gitCandidates()) {
+    try {
+      await execFileText(candidate, ["--version"], 5000)
+      cachedExecutable = candidate
+      return candidate
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  cachedExecutable = null
+  return null
+}
+
+async function hasWingetAsync(): Promise<boolean> {
+  if (cachedWinget !== undefined) return cachedWinget
+  if (process.platform !== "win32") {
+    cachedWinget = false
+    return false
+  }
+  try {
+    await execFileText("winget", ["--version"], 8000)
+    cachedWinget = true
+  } catch {
+    cachedWinget = false
+  }
+  return cachedWinget
+}
+
+export async function detectGitAsync(force = false): Promise<GitEnvironment> {
+  const executable = await resolveGitExecutableAsync(force)
+  if (!executable) {
+    return {
+      available: false,
+      platform: process.platform,
+      canAutoInstall: await hasWingetAsync(),
+    }
+  }
+  try {
+    if (!cachedVersion) cachedVersion = (await execFileText(executable, ["--version"], 5000)).trim()
+  } catch {
+    cachedVersion = undefined
+  }
+  return {
+    available: true,
+    version: cachedVersion,
+    path: executable,
+    platform: process.platform,
+    canAutoInstall: false,
+  }
+}
+
 function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -426,24 +492,248 @@ export function gitRemotes(projectPath: string): GitRemote[] {
   }))
 }
 
-function checkoutBranch(projectPath: string, branch: string): string {
-  if (!branch || branch.startsWith("-")) throw new Error("Invalid branch name")
+async function remoteNamesAsync(projectPath: string): Promise<string[]> {
   try {
-    return runGitSync(projectPath, ["switch", branch])
+    return (await runGitAsync(projectPath, ["remote"], 10_000))
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
   } catch {
-    return runGitSync(projectPath, ["checkout", branch])
+    return []
   }
 }
 
-export function gitCheckout(projectPath: string, branch: string): string {
+export async function gitGraphAsync(projectPath: string, requestedLimit = 300): Promise<GitGraphData> {
+  const limit = Math.min(Math.max(Math.trunc(requestedLimit) || 300, 20), 600)
+  const names = await remoteNamesAsync(projectPath)
+  const format = ["%H", "%P", "%an", "%ae", "%at", "%s", "%D"].join("%x1f") + "%x1e"
+  let output = ""
+  try {
+    output = await runGitAsync(
+      projectPath,
+      ["log", "--all", "--date-order", `--max-count=${limit + 1}`, `--pretty=format:${format}`],
+      45_000,
+    )
+  } catch (error) {
+    const message = gitFailure(error).toLowerCase()
+    if (!message.includes("does not have any commits") && !message.includes("unknown revision")) throw error
+  }
+
+  const records = output.split(RECORD).map((record) => record.replace(/^\r?\n/, "")).filter(Boolean)
+  const truncated = records.length > limit
+  const commits = records
+    .slice(0, limit)
+    .map((record) => parseRecord(record, names))
+    .filter((commit): commit is GitCommit => Boolean(commit))
+
+  let head: string | null = null
+  let branch: string | null = null
+  try {
+    head = (await runGitAsync(projectPath, ["rev-parse", "HEAD"], 10_000)).trim() || null
+  } catch {
+    head = null
+  }
+  try {
+    branch = (await runGitAsync(projectPath, ["rev-parse", "--abbrev-ref", "HEAD"], 10_000)).trim()
+    if (branch === "HEAD") branch = null
+  } catch {
+    branch = null
+  }
+
+  return { commits, head, branch, remoteNames: names, truncated }
+}
+
+export async function gitCommitDetailAsync(projectPath: string, hash: string): Promise<GitCommitDetail> {
+  if (!/^[0-9a-f]{4,40}$/i.test(hash)) throw new Error("Invalid commit hash")
+  const format = ["%H", "%P", "%an", "%ae", "%at", "%cn", "%ce", "%ct", "%s", "%D", "%b"].join("%x1f")
+  const raw = await runGitAsync(projectPath, ["log", "-1", `--pretty=format:${format}`, hash], 30_000)
+  const fields = raw.split(FIELD)
+  const [commitHash, parents, author, authorEmail, authorTime, committer, committerEmail, commitTime, subject, decoration] =
+    fields.slice(0, 10)
+  const body = fields.slice(10).join(FIELD).trim()
+  const commit: GitCommit = {
+    hash: commitHash || hash,
+    shortHash: (commitHash || hash).slice(0, 7),
+    parents: parents ? parents.split(" ").filter(Boolean) : [],
+    author: author || "",
+    authorEmail: authorEmail || "",
+    timestamp: Number(authorTime) || 0,
+    subject: subject || "",
+    refs: parseRefs(decoration || "", await remoteNamesAsync(projectPath)),
+  }
+
+  const files: GitCommitFile[] = []
+  const statuses = new Map<string, string>()
+  try {
+    const nameStatus = await runGitAsync(projectPath, ["show", "--name-status", "--format=", hash], 30_000)
+    for (const line of nameStatus.split(/\r?\n/)) {
+      if (!line.trim()) continue
+      const [code, ...paths] = line.split("\t")
+      const path = paths[paths.length - 1]?.trim()
+      if (path) statuses.set(path, (code || "M").slice(0, 1))
+    }
+  } catch {
+    // Merge commits may not expose a name-status list.
+  }
+  try {
+    const numstat = await runGitAsync(projectPath, ["show", "--numstat", "--format=", hash], 30_000)
+    for (const line of numstat.split(/\r?\n/)) {
+      if (!line.trim()) continue
+      const [added, deleted, ...pathParts] = line.split("\t")
+      const path = pathParts.join("\t").trim()
+      if (!path) continue
+      files.push({
+        path,
+        status: statuses.get(path) ?? "M",
+        additions: added === "-" ? 0 : Number(added) || 0,
+        deletions: deleted === "-" ? 0 : Number(deleted) || 0,
+      })
+    }
+  } catch {
+    // Ignore missing stat data.
+  }
+  const insertions = files.reduce((sum, file) => sum + file.additions, 0)
+  const deletions = files.reduce((sum, file) => sum + file.deletions, 0)
+
+  return {
+    commit,
+    body,
+    committer: committer || "",
+    committerEmail: committerEmail || "",
+    commitTimestamp: Number(commitTime) || 0,
+    files,
+    insertions,
+    deletions,
+  }
+}
+
+export async function gitBranchesAsync(projectPath: string): Promise<GitBranches> {
+  const local: GitBranch[] = []
+  const remotes: GitBranch[] = []
+  try {
+    const output = await runGitAsync(
+      projectPath,
+      ["for-each-ref", "--format=%(refname:short)\t%(HEAD)\t%(upstream:short)", "refs/heads"],
+      15_000,
+    )
+    for (const line of output.split(/\r?\n/)) {
+      if (!line.trim()) continue
+      const [name, head, upstream] = line.split("\t")
+      if (!name) continue
+      local.push({ name, current: head === "*", upstream: upstream || undefined })
+    }
+  } catch {
+    // No local branches yet.
+  }
+  try {
+    const output = await runGitAsync(
+      projectPath,
+      ["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
+      15_000,
+    )
+    for (const line of output.split(/\r?\n/)) {
+      const name = line.trim()
+      if (!name || name.endsWith("/HEAD")) continue
+      remotes.push({ name, current: false, remote: true })
+    }
+  } catch {
+    // No remotes.
+  }
+  local.sort((a, b) => Number(b.current) - Number(a.current) || a.name.localeCompare(b.name))
+  remotes.sort((a, b) => a.name.localeCompare(b.name))
+  let current: string | null = local.find((branch) => branch.current)?.name ?? null
+  if (!current) {
+    try {
+      const branch = (await runGitAsync(projectPath, ["rev-parse", "--abbrev-ref", "HEAD"], 10_000)).trim()
+      current = branch === "HEAD" ? null : branch
+    } catch {
+      current = null
+    }
+  }
+  return { local, remotes, current }
+}
+
+async function defaultRemoteBranchAsync(projectPath: string, remote: string): Promise<string | undefined> {
+  try {
+    const symbolic = (
+      await runGitAsync(projectPath, ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], 10_000)
+    ).trim()
+    if (symbolic.startsWith(`${remote}/`)) return symbolic.slice(remote.length + 1)
+  } catch {
+    // Fall back to common branch names.
+  }
+  for (const branch of ["main", "master"]) {
+    try {
+      await runGitAsync(projectPath, ["rev-parse", "--verify", `refs/remotes/${remote}/${branch}`], 10_000)
+      return branch
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return undefined
+}
+
+export async function gitRemotesAsync(projectPath: string): Promise<GitRemote[]> {
+  let output = ""
+  try {
+    output = await runGitAsync(projectPath, ["remote", "-v"], 10_000)
+  } catch {
+    return []
+  }
+  const byName = new Map<string, string>()
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/)
+    if (!match) continue
+    const name = match[1]
+    const url = match[2]
+    if (match[3] === "fetch" && name && url && !byName.has(name)) byName.set(name, url)
+  }
+  return Promise.all(
+    [...byName.entries()].map(async ([name, url]) => ({
+      name,
+      url,
+      defaultBranch: await defaultRemoteBranchAsync(projectPath, name),
+      github: githubRemote(url),
+    })),
+  )
+}
+
+async function gitPathAsync(projectPath: string, name: string): Promise<string | null> {
+  try {
+    return (await runGitAsync(projectPath, ["rev-parse", "--git-path", name], 10_000)).trim()
+  } catch {
+    return null
+  }
+}
+
+export async function gitOperationAsync(projectPath: string): Promise<"merge" | "rebase" | null> {
+  const merge = await gitPathAsync(projectPath, "MERGE_HEAD")
+  if (merge && existsSync(resolve(projectPath, merge))) return "merge"
+  for (const name of ["rebase-merge", "rebase-apply"]) {
+    const path = await gitPathAsync(projectPath, name)
+    if (path && existsSync(resolve(projectPath, path))) return "rebase"
+  }
+  return null
+}
+
+async function checkoutBranch(projectPath: string, branch: string): Promise<string> {
+  if (!branch || branch.startsWith("-")) throw new Error("Invalid branch name")
+  try {
+    return await runGitAsync(projectPath, ["switch", branch])
+  } catch {
+    return await runGitAsync(projectPath, ["checkout", branch])
+  }
+}
+
+export function gitCheckout(projectPath: string, branch: string): Promise<string> {
   return checkoutBranch(projectPath, branch)
 }
 
-export function gitCreateBranch(projectPath: string, name: string): string {
+export async function gitCreateBranch(projectPath: string, name: string): Promise<string> {
   const branch = name.trim()
   if (!branch || branch.startsWith("-")) throw new Error("Invalid branch name")
-  runGitSync(projectPath, ["check-ref-format", "--branch", branch])
-  return runGitSync(projectPath, ["switch", "-c", branch])
+  await runGitAsync(projectPath, ["check-ref-format", "--branch", branch], 15_000)
+  return runGitAsync(projectPath, ["switch", "-c", branch])
 }
 
 function gitPath(projectPath: string, name: string): string {
@@ -475,14 +765,14 @@ export async function gitRebase(projectPath: string, branch: string): Promise<st
 }
 
 export async function gitAbort(projectPath: string): Promise<string> {
-  const operation = gitOperation(projectPath)
+  const operation = await gitOperationAsync(projectPath)
   if (operation === "merge") return runGitAsync(projectPath, ["merge", "--abort"])
   if (operation === "rebase") return runGitAsync(projectPath, ["rebase", "--abort"])
   throw new Error("No merge or rebase is in progress")
 }
 
 export async function gitContinue(projectPath: string): Promise<string> {
-  const operation = gitOperation(projectPath)
+  const operation = await gitOperationAsync(projectPath)
   if (operation === "rebase") return runGitAsync(projectPath, ["rebase", "--continue"])
   if (operation === "merge") return runGitAsync(projectPath, ["commit", "--no-edit"])
   throw new Error("No merge or rebase is in progress")
@@ -499,17 +789,17 @@ export async function gitStashPop(projectPath: string): Promise<string> {
 export async function gitTag(projectPath: string, name: string): Promise<string> {
   const tag = name.trim()
   if (!tag || tag.startsWith("-")) throw new Error("Invalid tag name")
-  return runGitSync(projectPath, ["tag", tag])
+  return runGitAsync(projectPath, ["tag", tag])
 }
 
 export async function gitDeleteBranch(projectPath: string, name: string): Promise<string> {
   const branch = name.trim()
   if (!branch || branch.startsWith("-")) throw new Error("Invalid branch name")
-  return runGitSync(projectPath, ["branch", "-d", branch])
+  return runGitAsync(projectPath, ["branch", "-d", branch])
 }
 
-export function gitInit(projectPath: string): string {
-  return runGitSync(projectPath, ["init"])
+export function gitInit(projectPath: string): Promise<string> {
+  return runGitAsync(projectPath, ["init"])
 }
 
 export function gitFetch(projectPath: string): Promise<string> {
@@ -523,14 +813,16 @@ export function gitPull(projectPath: string): Promise<string> {
 export async function gitPush(projectPath: string): Promise<string> {
   let upstream = ""
   try {
-    upstream = runGitSync(projectPath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim()
+    upstream = (
+      await runGitAsync(projectPath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 15_000)
+    ).trim()
   } catch {
     upstream = ""
   }
   if (upstream) return runGitAsync(projectPath, ["push"])
-  const remote = gitRemotes(projectPath).find((entry) => entry.name === "origin")
+  const remote = (await gitRemotesAsync(projectPath)).find((entry) => entry.name === "origin")
   if (!remote) throw new Error("No git remote is configured. Add a remote before pushing.")
-  const branch = runGitSync(projectPath, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()
+  const branch = (await runGitAsync(projectPath, ["rev-parse", "--abbrev-ref", "HEAD"], 15_000)).trim()
   if (!branch || branch === "HEAD") throw new Error("Cannot push a detached HEAD")
   return runGitAsync(projectPath, ["push", "-u", remote.name, branch])
 }
