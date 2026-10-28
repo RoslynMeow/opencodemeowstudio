@@ -271,7 +271,7 @@ export async function listRuntimeVersions(): Promise<{ installed: string[]; late
   } catch {
     latest = undefined
   }
-  return { installed: installedRuntimeVersions(), latest }
+  return { installed: await installedRuntimeVersions(), latest }
 }
 
 export function runtimeSize(version: string): number {

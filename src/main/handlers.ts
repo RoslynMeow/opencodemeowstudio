@@ -1,8 +1,8 @@
 import type { OpencodeClient } from "@opencode-ai/sdk"
 import { app, dialog, shell } from "electron"
 import { execFile, spawn } from "node:child_process"
-import { existsSync, mkdirSync, statSync } from "node:fs"
-import { readFile, writeFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { isAbsolute, relative, resolve } from "node:path"
 import type {
   Agent,
@@ -502,7 +502,7 @@ async function mcpView(): Promise<McpViewData> {
   )
   const effectiveMcp = asRecord(effective.mcp)
   const byName = new Map<string, McpEntry>()
-  for (const entry of mcpRawEntries("global")) {
+  for (const entry of await mcpRawEntries("global")) {
     byName.set(entry.name, {
       name: entry.name,
       scope: "global",
@@ -511,7 +511,7 @@ async function mcpView(): Promise<McpViewData> {
     })
   }
   if (project) {
-    for (const entry of mcpRawEntries("project")) {
+    for (const entry of await mcpRawEntries("project")) {
       byName.set(entry.name, {
         name: entry.name,
         scope: "project",
@@ -550,16 +550,16 @@ async function lspView(): Promise<LspViewData> {
   const effective = await call<Record<string, unknown>>(client.config.get()).catch(
     (): Record<string, unknown> => ({}),
   )
-  const globalRaw = lspRawConfig("global")
-  const projectRaw = project ? lspRawConfig("project") : undefined
+  const globalRaw = await lspRawConfig("global")
+  const projectRaw = project ? await lspRawConfig("project") : undefined
   const raw = projectRaw !== undefined ? projectRaw : globalRaw
   const enabled = raw === true || (!!raw && typeof raw === "object" && !Array.isArray(raw))
   const byName = new Map<string, LspEntry>()
-  for (const entry of lspRawEntries("global")) {
+  for (const entry of await lspRawEntries("global")) {
     byName.set(entry.name, { name: entry.name, scope: "global", config: entry.config as LspConfig })
   }
   if (project) {
-    for (const entry of lspRawEntries("project")) {
+    for (const entry of await lspRawEntries("project")) {
       byName.set(entry.name, { name: entry.name, scope: "project", config: entry.config as LspConfig })
     }
   }
@@ -706,13 +706,11 @@ export const handlers: Record<RpcName, Handler> = {
     await shell.openExternal(url)
   },
 
-  "app.openTerminal": (path?: string) => {
-    openProjectTerminal(path ?? requireDirectory())
-  },
+  "app.openTerminal": (path?: string) => openProjectTerminal(path ?? requireDirectory()),
 
   "app.openCrashReports": async () => {
     const dir = crashReportsDir()
-    mkdirSync(dir, { recursive: true })
+    await mkdir(dir, { recursive: true })
     const error = await shell.openPath(dir)
     if (error) throw new Error(error)
   },
@@ -748,7 +746,7 @@ export const handlers: Record<RpcName, Handler> = {
   "project.add": async (inputPath: string) => {
     const path = resolve(inputPath)
     if (!existsSync(path)) throw new Error(`Folder does not exist: ${path}`)
-    if (!statSync(path).isDirectory()) throw new Error(`Not a folder: ${path}`)
+    if (!(await stat(path)).isDirectory()) throw new Error(`Not a folder: ${path}`)
     const project = addProject(path)
     setActiveProject(project.id)
     setActiveDirectory(project.path)
@@ -818,7 +816,7 @@ export const handlers: Record<RpcName, Handler> = {
   "provider.ollamaDetect": (baseUrl?: string) => ollamaDetect(baseUrl),
 
   "provider.ollamaInstall": async (scope: ConfigScope, baseUrl: string, models: string[]) => {
-    const result = installOllamaProvider(scope, baseUrl, models)
+    const result = await installOllamaProvider(scope, baseUrl, models)
     await applyConfigChange()
     return result
   },
@@ -1235,7 +1233,7 @@ export const handlers: Record<RpcName, Handler> = {
   "config.read": (scope: ConfigScope) => readRawConfig(scope),
 
   "config.write": async (scope: ConfigScope, content: string) => {
-    const result = writeRawConfig(scope, content)
+    const result = await writeRawConfig(scope, content)
     await applyConfigChange()
     if (scope === "project") {
       const project = getActiveProject()
@@ -1245,7 +1243,7 @@ export const handlers: Record<RpcName, Handler> = {
   },
 
   "config.patch": async (scope: ConfigScope, path: (string | number)[], value: unknown) => {
-    const result = patchConfig(scope, path, value)
+    const result = await patchConfig(scope, path, value)
     await applyConfigChange()
     if (scope === "project") {
       const project = getActiveProject()
@@ -1255,7 +1253,7 @@ export const handlers: Record<RpcName, Handler> = {
   },
 
   "config.remove": async (scope: ConfigScope, path: (string | number)[]) => {
-    const result = removeConfigPath(scope, path)
+    const result = await removeConfigPath(scope, path)
     await applyConfigChange()
     if (scope === "project") {
       const project = getActiveProject()
@@ -1289,19 +1287,19 @@ export const handlers: Record<RpcName, Handler> = {
   "mcp.save": async (scope: ConfigScope, name: string, config: McpConfig) => {
     const serverName = name.trim()
     if (!serverName) throw new Error("MCP server name is required")
-    patchConfig(scope, ["mcp", serverName], config)
+    await patchConfig(scope, ["mcp", serverName], config)
     await applyConfigChange()
     return mcpView()
   },
 
   "mcp.remove": async (scope: ConfigScope, name: string) => {
-    removeConfigPath(scope, ["mcp", name])
+    await removeConfigPath(scope, ["mcp", name])
     await applyConfigChange()
     return mcpView()
   },
 
   "mcp.toggle": async (scope: ConfigScope, name: string, enabled: boolean) => {
-    patchConfig(scope, ["mcp", name, "enabled"], enabled)
+    await patchConfig(scope, ["mcp", name, "enabled"], enabled)
     await applyConfigChange()
     return mcpView()
   },
@@ -1334,7 +1332,7 @@ export const handlers: Record<RpcName, Handler> = {
   "lsp.view": () => lspView(),
 
   "lsp.setEnabled": async (scope: ConfigScope, enabled: boolean) => {
-    patchConfig(scope, ["lsp"], Boolean(enabled))
+    await patchConfig(scope, ["lsp"], Boolean(enabled))
     await applyConfigChange()
     return lspView()
   },
@@ -1342,29 +1340,29 @@ export const handlers: Record<RpcName, Handler> = {
   "lsp.save": async (scope: ConfigScope, name: string, config: LspConfig) => {
     const serverName = name.trim()
     if (!serverName) throw new Error("LSP server name is required")
-    if (readRawConfig(scope).parsed.lsp === true) {
-      patchConfig(scope, ["lsp"], {})
+    if ((await readRawConfig(scope)).parsed.lsp === true) {
+      await patchConfig(scope, ["lsp"], {})
     }
-    patchConfig(scope, ["lsp", serverName], config)
+    await patchConfig(scope, ["lsp", serverName], config)
     await applyConfigChange()
     return lspView()
   },
 
   "lsp.remove": async (scope: ConfigScope, name: string) => {
-    const raw = readRawConfig(scope).parsed.lsp
+    const raw = (await readRawConfig(scope)).parsed.lsp
     if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-      removeConfigPath(scope, ["lsp", name])
+      await removeConfigPath(scope, ["lsp", name])
       await applyConfigChange()
     }
     return lspView()
   },
 
   "lsp.toggle": async (scope: ConfigScope, name: string, disabled: boolean) => {
-    const raw = readRawConfig(scope).parsed.lsp
+    const raw = (await readRawConfig(scope)).parsed.lsp
     if (raw === true) {
-      patchConfig(scope, ["lsp"], {})
+      await patchConfig(scope, ["lsp"], {})
     }
-    const normalized = readRawConfig(scope).parsed.lsp
+    const normalized = (await readRawConfig(scope)).parsed.lsp
     const entries =
       normalized && typeof normalized === "object" && !Array.isArray(normalized)
         ? (normalized as Record<string, unknown>)
@@ -1372,7 +1370,7 @@ export const handlers: Record<RpcName, Handler> = {
     if (!disabled && !(name in entries)) {
       return lspView()
     }
-    patchConfig(scope, ["lsp", name, "disabled"], Boolean(disabled))
+    await patchConfig(scope, ["lsp", name, "disabled"], Boolean(disabled))
     await applyConfigChange()
     return lspView()
   },
@@ -1380,32 +1378,32 @@ export const handlers: Record<RpcName, Handler> = {
   "plugin.view": () => pluginView(),
 
   "plugin.add": async (scope: ConfigScope, name: string) => {
-    addNpmPlugin(scope, name)
+    await addNpmPlugin(scope, name)
     await applyPluginChange()
     return pluginView()
   },
 
   "plugin.remove": async (scope: ConfigScope, name: string) => {
-    removeNpmPlugin(scope, name)
+    await removeNpmPlugin(scope, name)
     await applyPluginChange()
     return pluginView()
   },
 
   "plugin.setLocalEnabled": async (scope: ConfigScope, fileName: string, enabled: boolean) => {
-    setLocalPluginEnabled(scope, fileName, Boolean(enabled))
+    await setLocalPluginEnabled(scope, fileName, Boolean(enabled))
     await applyPluginChange()
     return pluginView()
   },
 
   "plugin.openFolder": async (scope: ConfigScope) => {
     const dir = scope === "project" ? projectPluginsDir(requireProject()) : globalPluginsDir(getSettings().profile)
-    mkdirSync(dir, { recursive: true })
+    await mkdir(dir, { recursive: true })
     const error = await shell.openPath(dir)
     if (error) throw new Error(error)
   },
 
   "plugin.createLocal": async (scope: ConfigScope, fileName: string, content: string) => {
-    createLocalPlugin(scope, fileName, content)
+    await createLocalPlugin(scope, fileName, content)
     await applyPluginChange()
     return pluginView()
   },

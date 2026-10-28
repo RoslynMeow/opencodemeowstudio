@@ -1,5 +1,6 @@
 import { app } from "electron"
-import { existsSync, readdirSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { access, readdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, join, resolve } from "node:path"
 import type { ConfigPaths, Profile, Project } from "@shared/types"
@@ -81,16 +82,19 @@ export function runtimeBinary(version: string): string {
   return join(runtimeRoot(version), "bin", process.platform === "win32" ? "opencode.exe" : "opencode")
 }
 
-export function installedRuntimeVersions(): string[] {
+export async function installedRuntimeVersions(): Promise<string[]> {
   const root = join(appDataDir(), "runtime", "opencode")
   if (!existsSync(root)) return []
   try {
-    return readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .filter((version) => existsSync(runtimeBinary(version)))
-      .sort()
-      .reverse()
+    const entries = await readdir(root, { withFileTypes: true })
+    const versions = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) =>
+          (await access(runtimeBinary(entry.name)).then(() => true).catch(() => false)) ? entry.name : null,
+        ),
+    )
+    return versions.filter((version): version is string => Boolean(version)).sort().reverse()
   } catch {
     return []
   }

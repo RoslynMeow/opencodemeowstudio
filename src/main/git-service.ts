@@ -197,10 +197,17 @@ export function runGitSync(projectPath: string, args: string[], timeout = 30_000
   })
 }
 
-export function runGitAsync(projectPath: string, args: string[], timeout = 180_000): Promise<string> {
+async function requireGitAsync(): Promise<string> {
+  const executable = await resolveGitExecutableAsync()
+  if (!executable) throw new Error("Git is not installed or is not available in PATH")
+  return executable
+}
+
+export async function runGitAsync(projectPath: string, args: string[], timeout = 180_000): Promise<string> {
+  const executable = await requireGitAsync()
   return new Promise((resolve, reject) => {
     execFile(
-      requireGit(),
+      executable,
       ["-C", projectPath, ...args],
       {
         encoding: "utf8",
@@ -832,15 +839,15 @@ export async function installGit(): Promise<GitInstallResult> {
     return {
       ok: false,
       output: "Automatic installation is only available on Windows.",
-      environment: detectGit(),
+      environment: await detectGitAsync(),
       manualUrl: "https://git-scm.com/downloads",
     }
   }
-  if (!hasWinget()) {
+  if (!(await hasWingetAsync())) {
     return {
       ok: false,
       output: "winget is not available on this system.",
-      environment: detectGit(),
+      environment: await detectGitAsync(),
       manualUrl: "https://git-scm.com/download/win",
     }
   }
@@ -876,7 +883,7 @@ export async function installGit(): Promise<GitInstallResult> {
   if (existsSync(gitDir) && !(process.env.PATH ?? "").toLowerCase().includes(gitDir.toLowerCase())) {
     process.env.PATH = `${gitDir};${process.env.PATH ?? ""}`
   }
-  const environment = detectGit()
+  const environment = await detectGitAsync()
   return {
     ok: environment.available,
     output,

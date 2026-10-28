@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -35,7 +36,7 @@ vi.mock("../../src/main/logger", () => ({
   },
 }))
 
-import { gitOperation, runGitSync } from "../../src/main/git-service"
+import { gitOperationAsync } from "../../src/main/git-service"
 import {
   createSessionWorktree,
   currentBranch,
@@ -53,7 +54,13 @@ let project: Project
 let sessionId: string
 
 function git(path: string, args: string[]): string {
-  return runGitSync(path, args)
+  return execFileSync("git", ["-C", path, ...args], {
+    encoding: "utf8",
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 30_000,
+  })
 }
 
 function write(path: string, content: string): void {
@@ -264,14 +271,14 @@ describe("mergeSessionWorktree", () => {
     expect(result.output).toBeTruthy()
     expect(result.worktree.status).toBe("conflict")
     expect(result.worktree.error).toBe("Merge conflicts need resolution")
-    expect(gitOperation(repo)).toBe("merge")
+    expect(await gitOperationAsync(repo)).toBe("merge")
     expect(readFileSync(join(repo, "app.txt"), "utf8")).toContain("<<<<<<<")
     expect(state.merges.find((item) => item.sessionId === sessionId)?.status).toBe("conflict")
 
     write(repo, "resolved\n")
     git(repo, ["add", "app.txt"])
     git(repo, ["commit", "-m", "resolve conflict"])
-    expect(gitOperation(repo)).toBeNull()
+    expect(await gitOperationAsync(repo)).toBeNull()
 
     const view = await listWorktreeViewAsync(project)
     expect(view.worktrees[0]).toMatchObject({ status: "merged", sessionId })

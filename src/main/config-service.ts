@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { access, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, extname, join } from "node:path"
 import { applyEdits, modify, parse as parseJsonc } from "jsonc-parser"
 import type { ConfigScope, LocalPlugin, PluginViewData, RawConfig } from "@shared/types"
@@ -23,10 +23,10 @@ export function configFileFor(scope: ConfigScope): string {
   return projectConfigFile(project)
 }
 
-export function readRawConfig(scope: ConfigScope): RawConfig {
+export async function readRawConfig(scope: ConfigScope): Promise<RawConfig> {
   const file = configFileFor(scope)
-  const exists = existsSync(file)
-  let content = exists ? readFileSync(file, "utf8") : ""
+  const exists = await access(file).then(() => true).catch(() => false)
+  let content = exists ? await readFile(file, "utf8") : ""
   if (content.charCodeAt(0) === 0xfeff) content = content.slice(1)
   let parsed: Record<string, unknown> = {}
   if (content.trim()) {
@@ -52,35 +52,35 @@ function validate(content: string, file: string): void {
   }
 }
 
-export function writeRawConfig(scope: ConfigScope, content: string): RawConfig {
+export async function writeRawConfig(scope: ConfigScope, content: string): Promise<RawConfig> {
   const file = configFileFor(scope)
   validate(content, file)
-  mkdirSync(dirname(file), { recursive: true })
+  await mkdir(dirname(file), { recursive: true })
   const temp = `${file}.tmp`
-  writeFileSync(temp, content, "utf8")
-  renameSync(temp, file)
+  await writeFile(temp, content, "utf8")
+  await rename(temp, file)
   log("config", `wrote ${file}`)
   return readRawConfig(scope)
 }
 
-export function patchConfig(scope: ConfigScope, path: (string | number)[], value: unknown): RawConfig {
+export async function patchConfig(scope: ConfigScope, path: (string | number)[], value: unknown): Promise<RawConfig> {
   const file = configFileFor(scope)
-  const raw = readRawConfig(scope)
+  const raw = await readRawConfig(scope)
   const base = raw.content.trim() ? raw.content : DEFAULT_CONFIG
   if (!raw.content.trim() && scope === "global") {
-    mkdirSync(dirname(file), { recursive: true })
+    await mkdir(dirname(file), { recursive: true })
   }
   const edits = modify(base, path, value, MODIFY_OPTIONS)
   const next = applyEdits(base, edits)
   return writeRawConfig(scope, next)
 }
 
-export function removeConfigPath(scope: ConfigScope, path: (string | number)[]): RawConfig {
+export async function removeConfigPath(scope: ConfigScope, path: (string | number)[]): Promise<RawConfig> {
   return patchConfig(scope, path, undefined)
 }
 
-export function readConfigValue<T = unknown>(scope: ConfigScope, path: (string | number)[]): T | undefined {
-  const raw = readRawConfig(scope)
+export async function readConfigValue<T = unknown>(scope: ConfigScope, path: (string | number)[]): Promise<T | undefined> {
+  const raw = await readRawConfig(scope)
   let current: unknown = raw.parsed
   for (const key of path) {
     if (current === null || current === undefined || typeof current !== "object") return undefined
@@ -104,10 +104,10 @@ export interface OllamaProviderConfig {
   models: Record<string, { name: string }>
 }
 
-export function installOllamaProvider(scope: ConfigScope, baseUrl: string, models: string[]): RawConfig {
+export async function installOllamaProvider(scope: ConfigScope, baseUrl: string, models: string[]): Promise<RawConfig> {
   const providerID = "ollama-local"
   const normalized = normalizeOllamaBaseUrl(baseUrl)
-  const parsed = readRawConfig(scope).parsed
+  const parsed = (await readRawConfig(scope)).parsed
   const providers = asRecord(parsed.provider)
   const existing = asRecord(providers[providerID])
   const existingModels = asRecord(existing.models)
@@ -122,12 +122,12 @@ export function installOllamaProvider(scope: ConfigScope, baseUrl: string, model
     options: { baseURL: normalized },
     models: modelMap,
   }
-  let result = patchConfig(scope, ["provider", providerID], provider)
+  let result = await patchConfig(scope, ["provider", providerID], provider)
 
-  const disabled = readRawConfig(scope).parsed.disabled_providers
+  const disabled = (await readRawConfig(scope)).parsed.disabled_providers
   if (Array.isArray(disabled) && disabled.includes(providerID)) {
     const filtered = disabled.filter((entry) => entry !== providerID)
-    result = patchConfig(scope, ["disabled_providers"], filtered)
+    result = await patchConfig(scope, ["disabled_providers"], filtered)
   }
   return result
 }
@@ -137,48 +137,52 @@ function asRecord(value: unknown): Record<string, unknown> {
   return {}
 }
 
-export function mcpRawEntries(scope: ConfigScope): Array<{ name: string; config: Record<string, unknown> }> {
-  const parsed = readRawConfig(scope).parsed
+export async function mcpRawEntries(scope: ConfigScope): Promise<Array<{ name: string; config: Record<string, unknown> }>> {
+  const parsed = (await readRawConfig(scope)).parsed
   const mcp = asRecord(parsed.mcp)
   return Object.entries(mcp).map(([name, config]) => ({ name, config: asRecord(config) }))
 }
 
-export function lspRawConfig(scope: ConfigScope): unknown {
-  return readRawConfig(scope).parsed.lsp
+export async function lspRawConfig(scope: ConfigScope): Promise<unknown> {
+  return (await readRawConfig(scope)).parsed.lsp
 }
 
-export function lspRawEntries(scope: ConfigScope): Array<{ name: string; config: Record<string, unknown> }> {
-  const lsp = readRawConfig(scope).parsed.lsp
+export async function lspRawEntries(scope: ConfigScope): Promise<Array<{ name: string; config: Record<string, unknown> }>> {
+  const lsp = (await readRawConfig(scope)).parsed.lsp
   if (!lsp || typeof lsp !== "object" || Array.isArray(lsp)) return []
   return Object.entries(lsp).map(([name, config]) => ({ name, config: asRecord(config) }))
 }
 
-export function pluginNpmEntries(scope: ConfigScope): string[] {
-  const value = readRawConfig(scope).parsed.plugin
+export async function pluginNpmEntries(scope: ConfigScope): Promise<string[]> {
+  const value = (await readRawConfig(scope)).parsed.plugin
   if (!Array.isArray(value)) return []
   return value.filter((entry): entry is string => typeof entry === "string")
 }
 
-export function addNpmPlugin(scope: ConfigScope, name: string): RawConfig {
+export async function addNpmPlugin(scope: ConfigScope, name: string): Promise<RawConfig> {
   const trimmed = name.trim()
   if (!trimmed) throw new Error("Plugin package name is required")
-  const current = pluginNpmEntries(scope)
+  const current = await pluginNpmEntries(scope)
   if (current.includes(trimmed)) return readRawConfig(scope)
   return patchConfig(scope, ["plugin"], [...current, trimmed])
 }
 
-export function removeNpmPlugin(scope: ConfigScope, name: string): RawConfig {
-  const filtered = pluginNpmEntries(scope).filter((entry) => entry !== name)
+export async function removeNpmPlugin(scope: ConfigScope, name: string): Promise<RawConfig> {
+  const filtered = (await pluginNpmEntries(scope)).filter((entry) => entry !== name)
   if (filtered.length === 0) return removeConfigPath(scope, ["plugin"])
   return patchConfig(scope, ["plugin"], filtered)
 }
 
 const PLUGIN_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"])
 
-function scanPluginDir(dir: string, scope: ConfigScope): LocalPlugin[] {
-  if (!existsSync(dir)) return []
+async function pathExists(path: string): Promise<boolean> {
+  return access(path).then(() => true).catch(() => false)
+}
+
+async function scanPluginDir(dir: string, scope: ConfigScope): Promise<LocalPlugin[]> {
+  if (!(await pathExists(dir))) return []
   const entries: LocalPlugin[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
     if (!entry.isFile()) continue
     const full = join(dir, entry.name)
     const enabled = !entry.name.endsWith(".disabled")
@@ -188,7 +192,7 @@ function scanPluginDir(dir: string, scope: ConfigScope): LocalPlugin[] {
     let size = 0
     let modified = 0
     try {
-      const info = statSync(full)
+      const info = await stat(full)
       size = info.size
       modified = info.mtimeMs
     } catch {
@@ -207,16 +211,19 @@ function scanPluginDir(dir: string, scope: ConfigScope): LocalPlugin[] {
   return entries.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export function pluginView(): PluginViewData {
+export async function pluginView(): Promise<PluginViewData> {
   const project = getActiveProject()
   const settings = getSettings()
   const globalDir = join(globalConfigDir(settings.profile), "plugins")
   const projectDir = project ? projectPluginsDir(project) : null
   const npm = [
-    ...(project ? pluginNpmEntries("project").map((name) => ({ name, scope: "project" as const })) : []),
-    ...pluginNpmEntries("global").map((name) => ({ name, scope: "global" as const })),
+    ...(project ? (await pluginNpmEntries("project")).map((name) => ({ name, scope: "project" as const })) : []),
+    ...(await pluginNpmEntries("global")).map((name) => ({ name, scope: "global" as const })),
   ]
-  const local = [...scanPluginDir(globalDir, "global"), ...(projectDir ? scanPluginDir(projectDir, "project") : [])]
+  const local = [
+    ...(await scanPluginDir(globalDir, "global")),
+    ...(projectDir ? await scanPluginDir(projectDir, "project") : []),
+  ]
   return {
     npm,
     local,
@@ -233,28 +240,28 @@ function pluginsDirFor(scope: ConfigScope): string {
   return projectPluginsDir(project)
 }
 
-export function setLocalPluginEnabled(scope: ConfigScope, fileName: string, enabled: boolean): PluginViewData {
+export async function setLocalPluginEnabled(scope: ConfigScope, fileName: string, enabled: boolean): Promise<PluginViewData> {
   const dir = pluginsDirFor(scope)
   const source = join(dir, fileName)
   const target = enabled ? source.replace(/\.disabled$/, "") : `${source}.disabled`
-  if (!existsSync(source)) throw new Error(`Plugin file not found: ${source}`)
+  if (!(await pathExists(source))) throw new Error(`Plugin file not found: ${source}`)
   if (source === target) return pluginView()
-  if (existsSync(target)) throw new Error(`Target file already exists: ${target}`)
-  renameSync(source, target)
+  if (await pathExists(target)) throw new Error(`Target file already exists: ${target}`)
+  await rename(source, target)
   log("plugins", `${enabled ? "enabled" : "disabled"} local plugin ${fileName}`)
   return pluginView()
 }
 
-export function createLocalPlugin(scope: ConfigScope, fileName: string, content: string): PluginViewData {
+export async function createLocalPlugin(scope: ConfigScope, fileName: string, content: string): Promise<PluginViewData> {
   const dir = pluginsDirFor(scope)
-  mkdirSync(dir, { recursive: true })
+  await mkdir(dir, { recursive: true })
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "-")
   if (!PLUGIN_EXTENSIONS.has(extname(safeName).toLowerCase())) {
     throw new Error("Plugin file must use .js, .ts, .mjs or .cjs")
   }
   const target = join(dir, safeName)
-  if (existsSync(target)) throw new Error(`Plugin file already exists: ${target}`)
-  writeFileSync(target, content, "utf8")
+  if (await pathExists(target)) throw new Error(`Plugin file already exists: ${target}`)
+  await writeFile(target, content, "utf8")
   log("plugins", `created local plugin ${target}`)
   return pluginView()
 }
@@ -268,8 +275,8 @@ export function projectPluginsFolder(): string | null {
   return project ? projectPluginsDir(project) : null
 }
 
-export function ensureProjectConfig(): RawConfig {
-  const raw = readRawConfig("project")
+export async function ensureProjectConfig(): Promise<RawConfig> {
+  const raw = await readRawConfig("project")
   if (!raw.exists) return writeRawConfig("project", DEFAULT_CONFIG)
   return raw
 }
